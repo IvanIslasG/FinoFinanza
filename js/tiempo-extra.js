@@ -346,6 +346,8 @@ async function saveEdit(){
   alert('Cambios guardados.');
 }
 
+async function clearStore(){return new Promise((resolve,reject)=>{const req=db.transaction(STORE,'readwrite').objectStore(STORE).clear();req.onsuccess=()=>resolve();req.onerror=()=>reject(req.error);});}
+async function importTiempoExtraJSON(file){let parsed;try{parsed=JSON.parse(await file.text());}catch{alert('El archivo no contiene JSON válido.');return;}const records=Array.isArray(parsed)?parsed:parsed.data;if(!Array.isArray(records)){alert('El archivo no tiene el formato esperado.');return;}const valid=records.filter(r=>r&&typeof r==='object'&&typeof r.start==='string'&&Array.isArray(r.entries));if(!valid.length){alert('No se encontraron semanas válidas.');return;}const replace=confirm(`Se encontraron ${valid.length} semanas.\n\nAceptar = reemplazar historial.\nCancelar = agregar al historial actual.`);if(replace)await clearStore();let imported=0;for(const original of valid){const copy={...original};delete copy.id;copy.importedAt=new Date().toISOString();try{await addItem(copy);imported++;}catch(error){console.error(error);}}await loadSavedWeeks();alert(`${imported} semana(s) importada(s).`);}
 async function exportTiempoExtraJSON(){
   const records=await getAll();
   records.sort((a,b)=>a.start.localeCompare(b.start));
@@ -389,6 +391,8 @@ export async function initTiempoExtra(){
     if(w)copyText(buildWeekMessageText(w),document.getElementById('copyMessageBtn'));
   });
   document.getElementById('exportTEJson').addEventListener('click',exportTiempoExtraJSON);
+  document.getElementById('importTEJsonBtn').addEventListener('click',()=>document.getElementById('importTEJsonInput').click());
+  document.getElementById('importTEJsonInput').addEventListener('change',async e=>{const file=e.target.files?.[0];if(file)await importTiempoExtraJSON(file);e.target.value='';});
 
   try{
     await openDB();
