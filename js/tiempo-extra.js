@@ -1329,84 +1329,145 @@ function valueAt(row,field){
 
 function rowsToImportedWeeks(){
   const dataRows=tableImportState.rows.slice(tableImportState.headerRow+1);
+
   if(mappedColumnIndex('date')<0){
     throw new Error('Debes asignar una columna como Fecha.');
   }
-  if(mappedColumnIndex('hours')<0 && (mappedColumnIndex('start')<0 || mappedColumnIndex('end')<0)){
+
+  if(
+    mappedColumnIndex('hours')<0 &&
+    (mappedColumnIndex('start')<0 || mappedColumnIndex('end')<0)
+  ){
     throw new Error('Necesitamos Horas, o bien Hora inicio + Hora fin.');
   }
 
   const groups=new Map();
-  let carryPeriod='',carryReport='',carryPay='';
 
   for(const row of dataRows){
     const date=parseFlexibleDate(valueAt(row,'date'));
     if(!date)continue;
 
-    const rawPeriod=String(valueAt(row,'period')||'').trim();
-    const rawReport=parseFlexibleDate(valueAt(row,'report'));
-    const rawPay=parseFlexibleDate(valueAt(row,'pay'));
-    if(rawPeriod)carryPeriod=rawPeriod;
-    if(rawReport)carryReport=rawReport;
-    if(rawPay)carryPay=rawPay;
-
     const start=parseFlexibleTime(valueAt(row,'start'));
     const end=parseFlexibleTime(valueAt(row,'end'));
+
     let minutes=parseDurationMinutes(valueAt(row,'hours'));
-    if(!minutes && start && end)minutes=minutesBetween(start,end);
+    if(!minutes && start && end){
+      minutes=minutesBetween(start,end);
+    }
 
     const activity=String(valueAt(row,'activity')||'').trim();
 
-    // Ignore apparent total/footer rows with no usable daily record.
+    // Ignorar pies de tabla / totales sin un registro diario utilizable.
     if(!minutes && !activity && !start && !end)continue;
 
     const monday=mondayFromDateString(date);
+    const mondayDate=new Date(monday+'T12:00:00');
+
+    // IMPORTANTE:
+    // Ya no arrastramos Periodo / Reporte / Pago desde semanas anteriores.
+    // Cada semana nace con sus propios valores calculados.
     if(!groups.has(monday)){
-      const mondayDate=new Date(monday+'T12:00:00');
+      const defaultReport=nextMondayFromWeek(monday);
+
       groups.set(monday,{
-        periodo:carryPeriod || String(isoWeekNumber(mondayDate)),
+        periodo:String(isoWeekNumber(mondayDate)),
         start:monday,
         end:sundayFromMonday(monday),
-        report:carryReport || nextMondayFromWeek(monday),
-        pay:carryPay || secondSaturdayAfter(carryReport || nextMondayFromWeek(monday)),
+        report:defaultReport,
+        pay:secondSaturdayAfter(defaultReport),
         status:'Borrador',
         importedAt:new Date().toISOString(),
         importSource:tableImportState.sourceLabel,
         entries:Array.from({length:7},(_,i)=>{
-          const d=new Date(monday+'T12:00:00');d.setDate(d.getDate()+i);
-          return {date:toInputDate(d),start:'',end:'',activity:'',minutes:0};
+          const d=new Date(monday+'T12:00:00');
+          d.setDate(d.getDate()+i);
+          return {
+            date:toInputDate(d),
+            start:'',
+            end:'',
+            activity:'',
+            minutes:0
+          };
         })
       });
     }
 
     const week=groups.get(monday);
-    if(carryPeriod)week.periodo=carryPeriod;
-    if(carryReport){week.report=carryReport;week.pay=carryPay||secondSaturdayAfter(carryReport);}
-    if(carryPay)week.pay=carryPay;
+
+    // Solo se aplican metadatos explícitos de una fila a SU propia semana.
+    const explicitPeriod=String(valueAt(row,'period')||'').trim();
+    const explicitReport=parseFlexibleDate(valueAt(row,'report'));
+    const explicitPay=parseFlexibleDate(valueAt(row,'pay'));
+
+    if(explicitPeriod){
+      week.periodo=explicitPeriod;
+    }
+
+    if(explicitReport){
+      week.report=explicitReport;
+
+      // Si no viene un pago explícito, recalcularlo desde el reporte de ESTA semana.
+      if(!explicitPay){
+        week.pay=secondSaturdayAfter(explicitReport);
+      }
+    }
+
+    if(explicitPay){
+      week.pay=explicitPay;
+    }
 
     const dateObj=new Date(date+'T12:00:00');
     if(isNaN(dateObj))continue;
+
     const jsDay=dateObj.getDay();
     const index=jsDay===0?6:jsDay-1;
+
     if(index<0 || index>6)continue;
+
     const existing=week.entries[index];
     if(!existing)continue;
 
-    // If a source has multiple entries on the same date, preserve the total and concatenate activity.
+    // Si existen varios registros el mismo día, acumular horas y actividad.
     if(existing.minutes>0 || existing.activity){
       existing.minutes+=minutes;
-      if(activity)existing.activity=[existing.activity,activity].filter(Boolean).join(' / ');
-      if(!existing.start && start)existing.start=start;
-      if(end)existing.end=end;
+
+      if(activity){
+        existing.activity=[existing.activity,activity]
+          .filter(Boolean)
+          .join(' / ');
+      }
+
+      if(!existing.start && start){
+        existing.start=start;
+      }
+
+      if(end){
+        existing.end=end;
+      }
     }else{
-      week.entries[index]={date,start,end,activity,minutes};
+      week.entries[index]={
+        date,
+        start,
+        end,
+        activity,
+        minutes
+      };
     }
   }
 
-  return Array.from(groups.values()).map(week=>({
-    ...week,
-    total:week.entries.reduce((sum,r)=>sum+(r.minutes||0),0)
-  })).filter(week=>week.total>0 || week.entries.some(r=>r.activity));
+  return Array.from(groups.values())
+    .map(week=>({
+      ...week,
+      total:week.entries.reduce(
+        (sum,row)=>sum+(row.minutes||0),
+        0
+      )
+    }))
+    .filter(
+      week=>
+        week.total>0 ||
+        week.entries.some(row=>row.activity)
+    );
 }
 
 async function commitMappedTableImport(){
