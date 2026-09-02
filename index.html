@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Finanzas Familiares</title>
+<style>
+:root{--bg:#f4f7fb;--surface:#fff;--text:#172033;--muted:#667085;--line:#e4e7ec;--nav:#0f172a;--nav2:#1e293b;--accent:#155eef;--soft:#eef4ff;--shadow:0 16px 42px rgba(16,24,40,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:linear-gradient(180deg,#edf3ff 0,#f7f9fc 260px,#f4f7fb 100%);color:var(--text)}
+button{font:inherit}.app{min-height:100vh;display:grid;grid-template-columns:260px 1fr}
+aside{background:var(--nav);color:#fff;padding:24px 18px;display:flex;flex-direction:column;gap:26px;height:100vh;position:sticky;top:0}
+.brand{display:flex;gap:12px;align-items:center;padding:0 6px}.brand-mark{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(135deg,#4f8cff,#155eef);font-weight:900}.brand h1{margin:0;font-size:17px}.brand small{color:#cbd5e1}
+.nav{display:grid;gap:8px}.nav button{border:0;background:transparent;color:#cbd5e1;text-align:left;border-radius:12px;padding:12px 14px;cursor:pointer}.nav button:hover,.nav button.active{background:var(--nav2);color:#fff}.nav button.active{box-shadow:inset 3px 0 0 var(--accent)}
+.side-footer{margin-top:auto;color:#94a3b8;font-size:12px;line-height:1.5;padding:0 6px}
+main{width:100%;max-width:1480px;margin:auto;padding:30px}.topbar{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px}.topbar h2{margin:0 0 7px;font-size:30px}.topbar p{margin:0;color:var(--muted)}
+.profile{background:#fff;border:1px solid var(--line);border-radius:999px;padding:8px 12px 8px 8px;display:flex;align-items:center;gap:9px}.avatar{width:34px;height:34px;border-radius:50%;background:var(--soft);color:var(--accent);display:grid;place-items:center;font-weight:900}.profile small{display:block;color:var(--muted);font-size:11px}
+.home-layout{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(360px,.95fr);gap:24px;align-items:start}.card{background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.card-head{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 22px;border-bottom:1px solid var(--line)}.card-head h3{margin:0;font-size:17px}.card-head span{color:var(--muted);font-size:12px}.card-body{padding:22px}
+.module-list{display:grid;gap:10px}.module{width:100%;border:1px solid var(--line);background:#fff;border-radius:16px;padding:16px 17px;display:grid;grid-template-columns:46px 1fr auto;gap:14px;align-items:center;text-align:left;cursor:pointer;transition:.18s}.module:hover{transform:translateY(-1px);border-color:#c7d7fe;box-shadow:0 9px 24px rgba(16,24,40,.06)}.module-icon{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:var(--soft);color:var(--accent);font-size:19px;font-weight:800}.module strong{display:block;font-size:15px;margin-bottom:4px}.module small{color:var(--muted)}.arrow{color:#98a2b3;font-size:20px}
+.summary-stack{display:grid;gap:12px}.summary-primary{border-radius:18px;padding:18px;background:linear-gradient(135deg,#172554,#155eef);color:#fff}.summary-primary small{opacity:.75}.summary-primary .value{font-size:30px;font-weight:900;margin:6px 0}.summary-primary .sub{font-size:12px;color:#dbeafe}
+.summary-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.summary-item{border:1px solid var(--line);border-radius:16px;padding:15px;background:#f8fafc}.summary-item small{display:block;color:var(--muted);margin-bottom:7px}.summary-item strong{font-size:18px}.summary-note{border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12px;line-height:1.45}.detail-link,.back{border:0;background:transparent;color:var(--accent);padding:0;font-weight:800;cursor:pointer}
+.screen{display:none}.screen.active{display:block}.placeholder{padding:30px;text-align:center;color:var(--muted)}.placeholder .big{width:70px;height:70px;border-radius:20px;display:grid;place-items:center;margin:0 auto 14px;background:var(--soft);color:var(--accent);font-size:28px}.placeholder h3{margin:0 0 8px;color:var(--text)}.placeholder p{margin:0 auto;max-width:580px;line-height:1.5}.back{margin-bottom:14px}
+
+.te-layout{display:grid;grid-template-columns:minmax(340px,.85fr) minmax(0,1.15fr);gap:22px;align-items:start}
+.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.field{display:grid;gap:6px}.field.full{grid-column:1/-1}
+.field label{font-size:12px;font-weight:800;color:#475467}
+.field input,.field select,.field textarea{
+  width:100%;border:1px solid var(--line);border-radius:12px;padding:11px 12px;
+  background:#fff;color:var(--text);outline:none
+}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:#84adff;box-shadow:0 0 0 3px #eef4ff}
+.field textarea{min-height:86px;resize:vertical}
+.form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.primary-btn,.secondary-btn{
+  border:0;border-radius:12px;padding:11px 15px;font-weight:900;cursor:pointer
+}
+.primary-btn{background:var(--accent);color:#fff}.secondary-btn{background:#fff;border:1px solid var(--line);color:#344054}
+.period-header{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;margin-bottom:14px}
+.period-badge{display:inline-flex;padding:6px 9px;border-radius:999px;background:var(--soft);color:var(--accent);font-size:12px;font-weight:900}
+.te-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+.te-kpi{padding:14px;border:1px solid var(--line);border-radius:14px;background:#f8fafc}
+.te-kpi small{display:block;color:var(--muted);margin-bottom:6px}.te-kpi strong{font-size:18px}
+.te-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px}
+.te-table{width:100%;border-collapse:collapse;min-width:760px}
+.te-table th,.te-table td{padding:10px 11px;border-bottom:1px solid var(--line);font-size:12px;text-align:left}
+.te-table th{background:#f8fafc;color:#475467;text-transform:uppercase;font-size:10px;letter-spacing:.04em}
+.te-table tr:last-child td{border-bottom:0}
+.te-total{display:flex;justify-content:flex-end;gap:18px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.te-total strong{font-size:20px}
+.status-pill{display:inline-flex;padding:5px 8px;border-radius:999px;background:#fff7ed;color:#b54708;font-size:11px;font-weight:900}
+.report-box{margin-top:16px;padding:15px;border:1px dashed #b8c8ef;border-radius:14px;background:#fbfdff;font-size:12px;color:#475467;line-height:1.5}
+.mini-hint{font-size:11px;color:var(--muted);margin-top:5px}
+
+.week-toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:16px}
+.week-toolbar .field{min-width:180px}
+.week-grid{display:grid;grid-template-columns:repeat(7,minmax(130px,1fr));gap:10px;overflow:auto}
+.day-card{border:1px solid var(--line);border-radius:16px;padding:12px;background:#fff;min-width:130px}
+.day-card.today{border-color:#84adff;background:#f8fbff}
+.day-card .dow{font-weight:900;font-size:13px}
+.day-card .date{font-size:11px;color:var(--muted);margin:3px 0 10px}
+.day-card input,.day-card select{width:100%;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:12px;margin-top:6px}
+.day-card .hours{font-size:18px;font-weight:900;margin-top:8px;color:var(--accent)}
+.day-card textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:12px;margin-top:6px;resize:vertical;min-height:58px}
+.week-summary{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-top:16px;padding:14px;border-radius:14px;background:#f8fafc;border:1px solid var(--line)}
+.week-summary strong{font-size:20px}
+@media(max-width:980px){.week-grid{grid-template-columns:repeat(7,150px)}}
+
+
+.storage-note{margin-top:14px;padding:12px 14px;border-radius:12px;background:#f8fafc;border:1px solid var(--line);font-size:12px;color:var(--muted);line-height:1.45}
+.action-btn{border:1px solid var(--line);background:#fff;color:#344054;border-radius:9px;padding:7px 9px;font-weight:800;cursor:pointer;font-size:11px}
+.action-btn.danger{color:#b42318;border-color:#fecdca}
+
+.week-view-panel{display:none;margin-top:18px;border-top:1px solid var(--line);padding-top:18px}
+.week-view-panel.show{display:block}
+
+.report-sheet{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:#fff}
+.report-sheet-head{display:flex;justify-content:space-between;gap:18px;align-items:center;padding:20px 22px;background:linear-gradient(180deg,#fbfdff,#f7faff);border-bottom:1px solid var(--line)}
+.report-kicker{font-size:11px;font-weight:900;letter-spacing:.12em;color:var(--accent);margin-bottom:6px}
+.report-title{font-size:24px;font-weight:900;letter-spacing:-.02em}
+.report-subtitle{font-size:12px;color:var(--muted);margin-top:4px}
+.report-total-box{min-width:130px;padding:12px 14px;border-radius:14px;background:var(--nav);color:#fff;text-align:right}
+.report-total-box span{display:block;font-size:11px;color:#cbd5e1;margin-bottom:4px}
+.report-total-box strong{font-size:22px}
+.report-meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid var(--line)}
+.report-meta-grid>div{padding:14px 16px;border-right:1px solid var(--line)}
+.report-meta-grid>div:last-child{border-right:0}
+.report-meta-grid span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:5px}
+.report-meta-grid strong{font-size:13px}
+.excel-table-wrap{overflow:auto}
+.excel-table{width:100%;border-collapse:collapse;min-width:760px}
+.excel-table th,.excel-table td{padding:11px 12px;border-bottom:1px solid var(--line);font-size:12px;text-align:left}
+.excel-table th{background:#f8fafc;color:#475467;text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.excel-table tbody tr:nth-child(even){background:#fcfcfd}
+.excel-table tfoot td{font-weight:900;background:#f8fafc;border-bottom:0}
+.copy-help{margin-top:14px;padding:10px 12px;border-radius:10px;background:#f8fafc;color:#667085;font-size:11px;line-height:1.45;border:1px solid var(--line)}
+
+.copy-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:12px}
+.copy-btn{
+  min-height:32px;border:1px solid var(--line);background:#fff;color:#475467;border-radius:8px;
+  padding:5px 9px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:5px;
+  cursor:pointer;box-shadow:none;transition:.15s ease
+}
+.copy-btn:hover{background:#f8fafc;border-color:#d0d5dd;color:#344054}
+.copy-btn:focus{outline:none;box-shadow:0 0 0 3px var(--soft)}
+.copy-icon{font-size:11px;color:#667085}
+
+@media(max-width:760px){.report-sheet-head{align-items:flex-start}.report-meta-grid{grid-template-columns:repeat(2,1fr)}.report-meta-grid>div:nth-child(2){border-right:0}.report-meta-grid>div:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+
+.editor-panel{display:none;margin-top:18px;border-top:1px solid var(--line);padding-top:18px}
+.editor-panel.show{display:block}
+.editor-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.editor-days{display:grid;gap:10px;margin-top:14px}
+.editor-day{display:grid;grid-template-columns:120px 1fr 1fr 2fr;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px}
+.editor-day input{width:100%;border:1px solid var(--line);border-radius:9px;padding:8px}
+@media(max-width:760px){.editor-grid{grid-template-columns:1fr}.editor-day{grid-template-columns:1fr 1fr}.editor-day .ed-label{grid-column:1/-1}}
+
+@media(max-width:980px){.te-layout{grid-template-columns:1fr}}
+@media(max-width:620px){.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.te-kpis{grid-template-columns:1fr}}
+
+@media(max-width:980px){.app{grid-template-columns:1fr}aside{height:auto;position:static;padding:14px}.brand,.side-footer{display:none}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}main{padding:18px}.home-layout{grid-template-columns:1fr}}
+@media(max-width:620px){main{padding:14px}.topbar{display:block}.profile{margin-top:14px;width:max-content}.summary-grid{grid-template-columns:1fr}.module{grid-template-columns:42px 1fr auto}.module-icon{width:42px;height:42px}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <div class="brand"><div class="brand-mark">F</div><div><h1>Finanzas Familiares</h1><small>Iván + Yorsky</small></div></div>
+  <div class="nav">
+    <button class="active" data-screen="home">⌂ Inicio</button>
+    <button data-screen="resumen">▦ Resumen</button>
+    <button data-screen="ingresos">↓ Ingresos</button>
+    <button data-screen="tiempoextra">⏱ Tiempo Extra</button>
+    <button data-screen="gastos">↑ Gastos</button>
+    <button data-screen="deudas">◫ Deudas</button>
+    <button data-screen="ahorro">◎ Ahorro</button>
+    <button data-screen="inversiones">↗ Inversiones</button>
+    <button data-screen="configuracion">⚙ Configuración</button>
+  </div>
+  <div class="side-footer">Prototipo inicial.<br>Los valores mostrados son demostrativos.</div>
+</aside>
+
+<main>
+<section class="screen active" id="home">
+  <div class="topbar">
+    <div>
+      <h2>Inicio</h2>
+      <p>Usa el menú lateral para entrar a cada módulo.</p>
+    </div>
+    <div class="profile">
+      <div class="avatar">I</div>
+      <div><strong>Iván</strong><small>Familia</small></div>
+    </div>
+  </div>
+
+  <div class="home-layout">
+    <section class="card">
+      <div class="card-head">
+        <h3>Resumen rápido</h3>
+        <button class="detail-link" data-open="resumen">Ver detalle →</button>
+      </div>
+      <div class="card-body">
+        <div class="summary-stack">
+          <div class="summary-primary">
+            <small>Balance del mes</small>
+            <div class="value">$7,550.00</div>
+            <div class="sub">Ingresos menos gastos registrados</div>
+          </div>
+
+          <div class="summary-grid">
+            <div class="summary-item"><small>Ingresos</small><strong>$24,850.00</strong></div>
+            <div class="summary-item"><small>Gastos</small><strong>$17,300.00</strong></div>
+            <div class="summary-item"><small>Deuda actual</small><strong>$32,400.00</strong></div>
+            <div class="summary-item"><small>Ahorro</small><strong>$41,800.00</strong></div>
+            <div class="summary-item"><small>Inversiones</small><strong>$18,500.00</strong></div>
+            <div class="summary-item"><small>Periodo</small><strong>Sep. 2026</strong></div>
+          </div>
+
+          <div class="summary-note">
+            La navegación principal ahora vive en la columna lateral. Dentro de cada módulo usaremos tarjetas para sus acciones y subsecciones.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h3>Accesos recientes</h3>
+        <span>Atajos del sistema</span>
+      </div>
+      <div class="card-body">
+        <div class="module-list">
+          <button class="module" data-open="ingresos">
+            <div class="module-icon">↓</div>
+            <div><strong>Importar volante TELMEX</strong><small>Leer y revisar un nuevo ingreso semanal.</small></div>
+            <div class="arrow">›</div>
+          </button>
+          <button class="module" data-open="gastos">
+            <div class="module-icon">↑</div>
+            <div><strong>Registrar gasto</strong><small>Captura un gasto personal o familiar.</small></div>
+            <div class="arrow">›</div>
+          </button>
+          <button class="module" data-open="deudas">
+            <div class="module-icon">◫</div>
+            <div><strong>Revisar deudas</strong><small>Consulta saldos, pagos y fechas importantes.</small></div>
+            <div class="arrow">›</div>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+</section>
+
+<section class="screen" id="resumen"><button class="back" data-open="home">← Volver al inicio</button><div class="topbar"><div><h2>Resumen</h2><p>Análisis detallado de las finanzas familiares.</p></div></div><div class="card"><div class="placeholder"><div class="big">▦</div><h3>Módulo Resumen</h3><p>Aquí construiremos balance general, ingresos contra gastos, deuda, ahorro, patrimonio y comparativos.</p></div></div></section>
+<section class="screen" id="ingresos">
+  <div class="topbar"><div><h2>Ingresos</h2><p>Nómina semanal, volantes TELMEX e ingresos extraordinarios.</p></div></div>
+  <div class="card">
+    <div class="card-head"><h3>Acciones de ingresos</h3><span>Selecciona una opción</span></div>
+    <div class="card-body">
+      <div class="module-list">
+        <button class="module"><div class="module-icon">PDF</div><div><strong>Volantes TELMEX</strong><small>Importar, leer, validar y consultar tus volantes.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">＋</div><div><strong>Registrar ingreso manual</strong><small>Para ingresos que no provienen de nómina.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">★</div><div><strong>Ingresos extraordinarios</strong><small>Bonos, pagos especiales y otros conceptos.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">≡</div><div><strong>Historial</strong><small>Consulta ingresos por semana, mes o periodo.</small></div><div class="arrow">›</div></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="screen" id="tiempoextra">
+  <div class="topbar">
+    <div>
+      <h2>Tiempo Extra</h2>
+      <p>Captura semanal de lunes a domingo. Al elegir la semana, las fechas se generan automáticamente.</p>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="card-head">
+      <h3>Captura semanal</h3>
+      <span>Lunes → Domingo</span>
+    </div>
+    <div class="card-body">
+
+      <div class="week-toolbar">
+        <div class="field">
+          <label for="weekStart">Semana que inicia</label>
+          <input id="weekStart" type="date">
+        </div>
+        <div class="field">
+          <label for="weekPeriod">Periodo</label>
+          <input id="weekPeriod" type="number" min="1" max="53" placeholder="Ej. 34">
+        </div>
+        <div class="field">
+          <label for="weekReportDate">Fecha de reporte al jefe</label>
+          <input id="weekReportDate" type="date">
+        </div>
+        <div class="field">
+          <label for="weekPayDate">Pago estimado</label>
+          <input id="weekPayDate" type="date" readonly><div class="mini-hint">Se calcula como el segundo sábado posterior a la fecha de reporte.</div>
+        </div>
+        
+      </div>
+
+      <div class="week-grid" id="weekGrid"></div>
+
+      <div class="week-summary">
+        <div>
+          <small style="color:var(--muted)">Total semanal capturado</small><br>
+          <strong id="weekTotal">00:00</strong>
+        </div>
+        <div>
+          <button class="primary-btn" id="saveWeek" type="button">Guardar semana</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div style="height:22px"></div>
+
+  <section class="card">
+    <div class="card-head">
+      <h3>Periodos guardados</h3>
+      <span>Para reporte y conciliación</span>
+    </div>
+    <div class="card-body">
+      <div class="te-table-wrap">
+        <table class="te-table">
+          <thead>
+            <tr>
+              <th>Periodo</th>
+              <th>Semana</th>
+              <th>Total</th>
+              <th>Reporte</th>
+              <th>Pago estimado</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="savedWeeks">
+            <tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="storage-note">
+        Guardado local activo con IndexedDB. Las semanas permanecerán en este navegador aunque cierres la página.
+        Si borras los datos del navegador o usas otro dispositivo, esos registros no estarán disponibles allí.
+      </div>
+
+
+      <div class="week-view-panel" id="weekViewPanel">
+        <div class="period-header">
+          <div>
+            <h3 style="margin:0 0 6px">Reporte semanal de tiempo extra</h3>
+            <div class="mini-hint" id="weekViewMeta">—</div>
+          </div>
+          <button class="secondary-btn" id="closeWeekView" type="button">Cerrar</button>
+        </div>
+
+        <div class="report-sheet">
+          <div class="report-sheet-head">
+            <div>
+              <div class="report-kicker">TIEMPO EXTRA</div>
+              <div class="report-title" id="reportTitle">Periodo —</div>
+              <div class="report-subtitle" id="reportSubtitle">Semana —</div>
+            </div>
+            <div class="report-total-box">
+              <span>Total</span>
+              <strong id="reportTotal">00:00 h</strong>
+            </div>
+          </div>
+
+          <div class="report-meta-grid">
+            <div><span>Periodo</span><strong id="reportPeriod">—</strong></div>
+            <div><span>Fecha de reporte</span><strong id="reportDate">—</strong></div>
+            <div><span>Pago estimado</span><strong id="reportPay">—</strong></div>
+            <div><span>Estado</span><strong id="reportStatus">—</strong></div>
+          </div>
+
+          <div class="excel-table-wrap">
+            <table class="excel-table">
+              <thead>
+                <tr>
+                  <th>Día</th>
+                  <th>Fecha</th>
+                  <th>Hora inicio</th>
+                  <th>Hora fin</th>
+                  <th>Horas</th>
+                  <th>Actividad</th>
+                </tr>
+              </thead>
+              <tbody id="reportRows"></tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="4">TOTAL</td>
+                  <td id="reportFootTotal">00:00</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        <div class="copy-help">
+          <strong>Listo para Excel:</strong> “Copiar para Excel” copia columnas separadas por tabulaciones.
+          Copia y pega directamente en la primera celda: Excel distribuirá filas y columnas automáticamente.
+        </div>
+
+        <div class="copy-actions">
+          <button class="copy-btn" id="copyExcelBtn" type="button" title="Copiar tabla para Excel">
+            <span class="copy-icon">⧉</span><span>Copiar Excel</span>
+          </button>
+          <button class="copy-btn" id="copyMessageBtn" type="button" title="Copiar resumen para mensaje">
+            <span class="copy-icon">⧉</span><span>Copiar mensaje</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="editor-panel" id="weekEditor">
+        <h3 style="margin:0 0 14px">Editar semana</h3>
+        <div class="editor-grid">
+          <div class="field"><label for="editPeriod">Periodo</label><input id="editPeriod" type="number" min="1" max="53"></div>
+          <div class="field"><label for="editReport">Fecha de reporte</label><input id="editReport" type="date"></div>
+          <div class="field"><label for="editPay">Pago estimado</label><input id="editPay" type="date"></div>
+          <div class="field"><label for="editStatus">Estado</label>
+            <select id="editStatus">
+              <option>Borrador</option>
+              <option>Reportado</option>
+              <option>Pendiente de pago</option>
+              <option>Pagado</option>
+              <option>Con diferencia</option>
+            </select>
+          </div>
+        </div>
+        <div class="editor-days" id="editorDays"></div>
+        <div class="form-actions">
+          <button class="primary-btn" id="saveEditWeek" type="button">Guardar cambios</button>
+          <button class="secondary-btn" id="cancelEditWeek" type="button">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</section>
+
+<section class="screen" id="gastos">
+  <div class="topbar"><div><h2>Gastos</h2><p>Registro y clasificación de gastos.</p></div></div>
+  <div class="card">
+    <div class="card-head"><h3>Acciones de gastos</h3><span>Selecciona una opción</span></div>
+    <div class="card-body">
+      <div class="module-list">
+        <button class="module"><div class="module-icon">＋</div><div><strong>Registrar gasto</strong><small>Captura un nuevo gasto personal o familiar.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">≡</div><div><strong>Historial</strong><small>Consulta y filtra los gastos registrados.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">#</div><div><strong>Categorías</strong><small>Organiza despensa, servicios, transporte y más.</small></div><div class="arrow">›</div></button>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="screen" id="deudas">
+  <div class="topbar"><div><h2>Deudas</h2><p>Tarjetas, préstamos y obligaciones.</p></div></div>
+  <div class="card">
+    <div class="card-head"><h3>Acciones de deudas</h3><span>Selecciona una opción</span></div>
+    <div class="card-body">
+      <div class="module-list">
+        <button class="module"><div class="module-icon">▣</div><div><strong>Tarjetas</strong><small>Saldos, fechas de corte y fechas límite de pago.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">◫</div><div><strong>Préstamos</strong><small>Créditos personales, vivienda y otras obligaciones.</small></div><div class="arrow">›</div></button>
+        <button class="module"><div class="module-icon">✓</div><div><strong>Pagos</strong><small>Registra pagos y consulta el avance de liquidación.</small></div><div class="arrow">›</div></button>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="screen" id="ahorro"><button class="back" data-open="home">← Volver al inicio</button><div class="topbar"><div><h2>Ahorro</h2><p>Fondos, metas y aportaciones.</p></div></div><div class="card"><div class="placeholder"><div class="big">◎</div><h3>Módulo Ahorro</h3><p>Aquí integraremos también el fondo de ahorro TELMEX, separado correctamente de los gastos.</p></div></div></section>
+<section class="screen" id="inversiones"><button class="back" data-open="home">← Volver al inicio</button><div class="topbar"><div><h2>Inversiones</h2><p>Portafolio y rendimiento.</p></div></div><div class="card"><div class="placeholder"><div class="big">↗</div><h3>Módulo Inversiones</h3><p>Aquí registraremos aportaciones, valor actual, rendimiento e instituciones.</p></div></div></section>
+<section class="screen" id="configuracion"><button class="back" data-open="home">← Volver al inicio</button><div class="topbar"><div><h2>Configuración</h2><p>Usuarios, cuentas y reglas del sistema.</p></div></div><div class="card"><div class="placeholder"><div class="big">⚙</div><h3>Módulo Configuración</h3><p>Aquí definiremos usuarios, cuentas, categorías y preferencias generales.</p></div></div></section>
+</main>
+</div>
+
+
+<script>
+const screens=[...document.querySelectorAll('.screen')];
+const navButtons=[...document.querySelectorAll('.nav button')];
+function openScreen(id){screens.forEach(s=>s.classList.toggle('active',s.id===id));navButtons.forEach(b=>b.classList.toggle('active',b.dataset.screen===id));window.scrollTo({top:0,behavior:'smooth'});}
+document.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click',()=>openScreen(el.dataset.open)));
+navButtons.forEach(btn=>btn.addEventListener('click',()=>openScreen(btn.dataset.screen)));
+
+const dayNames=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+let currentWeek=[], savedWeekData=[], editingId=null, db=null;
+const DB_NAME='FinanzasFamiliaresDB', STORE='tiempoExtraSemanas';
+
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id',autoIncrement:true});};r.onsuccess=()=>{db=r.result;res(db)};r.onerror=()=>rej(r.error);});}
+function getAll(){return new Promise((res,rej)=>{const r=db.transaction(STORE,'readonly').objectStore(STORE).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error);});}
+function addItem(x){return new Promise((res,rej)=>{const r=db.transaction(STORE,'readwrite').objectStore(STORE).add(x);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+function putItem(x){return new Promise((res,rej)=>{const r=db.transaction(STORE,'readwrite').objectStore(STORE).put(x);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+function delItem(id){return new Promise((res,rej)=>{const r=db.transaction(STORE,'readwrite').objectStore(STORE).delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});}
+
+function toInputDate(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function formatDateEs(s){if(!s)return'—';const [y,m,d]=s.split('-');return `${d}/${m}/${y}`;}
+function minutesBetween(a,b){if(!a||!b)return 0;const [ah,am]=a.split(':').map(Number),[bh,bm]=b.split(':').map(Number);let x=ah*60+am,y=bh*60+bm;if(y<x)y+=1440;return Math.max(0,y-x);}
+function hhmm(m){return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;}
+function nearestMonday(date){const d=new Date(date),day=d.getDay(),diff=(day===0?-6:1-day);d.setDate(d.getDate()+diff);d.setHours(12,0,0,0);return d;}
+function isoWeekNumber(date){const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));const n=d.getUTCDay()||7;d.setUTCDate(d.getUTCDate()+4-n);const y=new Date(Date.UTC(d.getUTCFullYear(),0,1));return Math.ceil((((d-y)/86400000)+1)/7);}
+function secondSaturdayAfter(dateStr){
+  if(!dateStr) return '';
+  const d=new Date(dateStr+'T12:00:00');
+  // Move to the first Saturday strictly after the report date.
+  let daysToSaturday=(6-d.getDay()+7)%7;
+  if(daysToSaturday===0) daysToSaturday=7;
+  d.setDate(d.getDate()+daysToSaturday+7); // second Saturday after
+  return toInputDate(d);
+}
+function setExpectedPay(){
+  const r=document.getElementById('weekReportDate').value;
+  document.getElementById('weekPayDate').value=secondSaturdayAfter(r);
+}
+document.getElementById('weekReportDate').addEventListener('change',setExpectedPay);
+
+function initWeek(){const m=nearestMonday(new Date());document.getElementById('weekStart').value=toInputDate(m);document.getElementById('weekPeriod').value=isoWeekNumber(m);const next=new Date(m);next.setDate(m.getDate()+7);document.getElementById('weekReportDate').value=toInputDate(next);setExpectedPay();buildWeek();}
+function buildWeek(){
+  const v=document.getElementById('weekStart').value;if(!v)return;
+  const monday=nearestMonday(new Date(v+'T12:00:00'));
+  document.getElementById('weekStart').value=toInputDate(monday);
+  document.getElementById('weekPeriod').value=isoWeekNumber(monday);
+  const grid=document.getElementById('weekGrid');grid.innerHTML='';currentWeek=[];
+  for(let i=0;i<7;i++){
+    const d=new Date(monday);d.setDate(monday.getDate()+i);const date=toInputDate(d);
+    currentWeek.push({date,start:i<5?'16:00':'',end:'',activity:'',minutes:0});
+    const card=document.createElement('div');card.className='day-card';
+    card.innerHTML=`<div class="dow">${dayNames[i]}</div><div class="date">${formatDateEs(date)}</div>
+      <input type="time" data-i="${i}" data-f="start" value="${i<5?'16:00':''}">
+      <input type="time" data-i="${i}" data-f="end">
+      <textarea data-i="${i}" data-f="activity" placeholder="Actividad"></textarea>
+      <div class="hours" id="hours-${i}">00:00</div>`;
+    grid.appendChild(card);
+  }
+  grid.querySelectorAll('input,textarea').forEach(el=>el.addEventListener('input',e=>{const i=+e.target.dataset.i,f=e.target.dataset.f;currentWeek[i][f]=e.target.value;currentWeek[i].minutes=minutesBetween(currentWeek[i].start,currentWeek[i].end);document.getElementById('hours-'+i).textContent=hhmm(currentWeek[i].minutes);updateWeekTotals();}));
+  updateWeekTotals();
+}
+function updateWeekTotals(){document.getElementById('weekTotal').textContent=hhmm(currentWeek.reduce((s,r)=>s+r.minutes,0));}
+document.getElementById('weekStart').addEventListener('change',buildWeek);
+
+document.getElementById('saveWeek').addEventListener('click',async()=>{
+  if(!currentWeek.some(r=>r.minutes>0||r.activity.trim())){alert('No hay tiempo extra capturado.');return;}
+  const item={periodo:document.getElementById('weekPeriod').value,start:currentWeek[0].date,end:currentWeek[6].date,total:currentWeek.reduce((s,r)=>s+r.minutes,0),report:document.getElementById('weekReportDate').value,pay:document.getElementById('weekPayDate').value,status:'Borrador',entries:JSON.parse(JSON.stringify(currentWeek)),createdAt:new Date().toISOString()};
+  await addItem(item);await loadSavedWeeks();alert('Semana guardada localmente.');
+});
+
+async function loadSavedWeeks(){savedWeekData=await getAll();savedWeekData.sort((a,b)=>b.start.localeCompare(a.start));renderSavedWeeks();}
+function renderSavedWeeks(){
+  const body=document.getElementById('savedWeeks');
+  if(!savedWeekData.length){body.innerHTML='<tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';return;}
+  body.innerHTML=savedWeekData.map(w=>`<tr><td>${w.periodo}</td><td>${formatDateEs(w.start)} – ${formatDateEs(w.end)}</td><td><strong>${hhmm(w.total)}</strong></td><td>${formatDateEs(w.report)}</td><td>${formatDateEs(w.pay)}</td><td><span class="status-pill">${w.status||'Borrador'}</span></td><td><button class="action-btn" data-view="${w.id}">Ver</button> <button class="action-btn" data-edit="${w.id}">Editar</button> <button class="action-btn danger" data-delete="${w.id}">Eliminar</button></td></tr>`).join('');
+  body.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>openWeekView(+b.dataset.view)));
+  body.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>openEditor(+b.dataset.edit)));
+  body.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteWeek(+b.dataset.delete)));
+}
+async function deleteWeek(id){const w=savedWeekData.find(x=>x.id===id);if(!w)return;if(!confirm(`¿Eliminar la semana ${formatDateEs(w.start)} – ${formatDateEs(w.end)}?`))return;await delItem(id);await loadSavedWeeks();}
+
+
+function buildWeekMessageText(w){
+  const lines=[];
+  lines.push(`TIEMPO EXTRA - PERIODO ${w.periodo}`);
+  lines.push(`Semana: ${formatDateEs(w.start)} al ${formatDateEs(w.end)}`);
+  lines.push(`Fecha de reporte: ${formatDateEs(w.report)}`);
+  lines.push(`Pago estimado: ${formatDateEs(w.pay)}`);
+  lines.push('');
+  lines.push('Detalle:');
+  (w.entries||[]).forEach((r,i)=>{
+    if((r.minutes||0)>0 || (r.activity||'').trim()){
+      lines.push(`${dayNames[i]} ${formatDateEs(r.date)} | ${r.start||'—'}-${r.end||'—'} | ${hhmm(r.minutes||minutesBetween(r.start,r.end))} h | ${r.activity||''}`);
+    }
+  });
+  lines.push('');
+  lines.push(`TOTAL: ${hhmm(w.total||0)} h`);
+  return lines.join(String.fromCharCode(10));
+}
+
+function buildExcelTSV(w){
+  const rows=[];
+  rows.push(['Día','Fecha','Hora inicio','Hora fin','Horas','Actividad']);
+  (w.entries||[]).forEach((r,i)=>{
+    if((r.minutes||0)>0 || (r.activity||'').trim()){
+      const activity=(r.activity||'')
+        .split(String.fromCharCode(9)).join(' ')
+        .split(String.fromCharCode(10)).join(' ')
+        .split(String.fromCharCode(13)).join(' ');
+      rows.push([
+        dayNames[i],
+        formatDateEs(r.date),
+        r.start||'',
+        r.end||'',
+        hhmm(r.minutes||minutesBetween(r.start,r.end)),
+        activity
+      ]);
+    }
+  });
+  rows.push(['TOTAL','','','',hhmm(w.total||0),'']);
+  return rows.map(r=>r.join(String.fromCharCode(9))).join(String.fromCharCode(10));
+}
+
+function openWeekView(id){
+  const w=savedWeekData.find(x=>x.id===id);
+  if(!w)return;
+
+  document.getElementById('weekViewMeta').textContent=`Periodo ${w.periodo} · ${formatDateEs(w.start)} – ${formatDateEs(w.end)} · ${hhmm(w.total||0)} h`;
+  document.getElementById('reportTitle').textContent=`Periodo ${w.periodo}`;
+  document.getElementById('reportSubtitle').textContent=`Semana del ${formatDateEs(w.start)} al ${formatDateEs(w.end)}`;
+  document.getElementById('reportTotal').textContent=`${hhmm(w.total||0)} h`;
+  document.getElementById('reportPeriod').textContent=w.periodo||'—';
+  document.getElementById('reportDate').textContent=formatDateEs(w.report);
+  document.getElementById('reportPay').textContent=formatDateEs(w.pay);
+  document.getElementById('reportStatus').textContent=w.status||'Borrador';
+  document.getElementById('reportFootTotal').textContent=hhmm(w.total||0);
+
+  const body=document.getElementById('reportRows');
+  body.innerHTML='';
+  (w.entries||[]).forEach((r,i)=>{
+    if((r.minutes||0)>0 || (r.activity||'').trim()){
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><strong>${dayNames[i]}</strong></td><td>${formatDateEs(r.date)}</td><td>${r.start||'—'}</td><td>${r.end||'—'}</td><td><strong>${hhmm(r.minutes||minutesBetween(r.start,r.end))}</strong></td><td>${r.activity||''}</td>`;
+      body.appendChild(tr);
+    }
+  });
+
+  document.getElementById('weekViewPanel').dataset.weekId=String(id);
+  document.getElementById('weekViewPanel').classList.add('show');
+  document.getElementById('weekEditor').classList.remove('show');
+  document.getElementById('weekViewPanel').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+async function copyText(text,button){
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(e){
+    const ta=document.createElement('textarea');
+    ta.value=text;
+    document.body.appendChild(ta);
+    ta.select();
+    try{document.execCommand('copy');}catch(_){}
+    ta.remove();
+  }
+  const old=button.textContent;
+  button.textContent='Copiado ✓';
+  setTimeout(()=>button.textContent=old,1500);
+}
+
+document.getElementById('closeWeekView').addEventListener('click',()=>{
+  document.getElementById('weekViewPanel').classList.remove('show');
+});
+
+document.getElementById('copyExcelBtn').addEventListener('click',async()=>{
+  const id=Number(document.getElementById('weekViewPanel').dataset.weekId);
+  const w=savedWeekData.find(x=>x.id===id);
+  if(!w)return;
+  await copyText(buildExcelTSV(w),document.getElementById('copyExcelBtn'));
+});
+
+document.getElementById('copyMessageBtn').addEventListener('click',async()=>{
+  const id=Number(document.getElementById('weekViewPanel').dataset.weekId);
+  const w=savedWeekData.find(x=>x.id===id);
+  if(!w)return;
+  await copyText(buildWeekMessageText(w),document.getElementById('copyMessageBtn'));
+});
+
+
+function openEditor(id){
+  const w=savedWeekData.find(x=>x.id===id);if(!w)return;editingId=id;
+  document.getElementById('editPeriod').value=w.periodo||'';document.getElementById('editReport').value=w.report||'';document.getElementById('editPay').value=w.pay||'';document.getElementById('editStatus').value=w.status||'Borrador';
+  const box=document.getElementById('editorDays');box.innerHTML='';
+  (w.entries||[]).forEach((r,i)=>{const row=document.createElement('div');row.className='editor-day';row.innerHTML=`<div class="ed-label"><strong>${dayNames[i]}</strong><br><small>${formatDateEs(r.date)}</small></div><input type="time" data-ei="${i}" data-ef="start" value="${r.start||''}"><input type="time" data-ei="${i}" data-ef="end" value="${r.end||''}"><input type="text" data-ei="${i}" data-ef="activity" value="${(r.activity||'').replace(/"/g,'&quot;')}" placeholder="Actividad">`;box.appendChild(row);});
+  document.getElementById('weekEditor').classList.add('show');document.getElementById('weekEditor').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('cancelEditWeek').addEventListener('click',()=>document.getElementById('weekEditor').classList.remove('show'));
+document.getElementById('saveEditWeek').addEventListener('click',async()=>{
+  const w=savedWeekData.find(x=>x.id===editingId);if(!w)return;
+  const entries=JSON.parse(JSON.stringify(w.entries||[]));
+  document.querySelectorAll('#editorDays [data-ei]').forEach(el=>{entries[+el.dataset.ei][el.dataset.ef]=el.value;});
+  entries.forEach(r=>r.minutes=minutesBetween(r.start,r.end));
+  await putItem({...w,periodo:document.getElementById('editPeriod').value,report:document.getElementById('editReport').value,pay:document.getElementById('editPay').value,status:document.getElementById('editStatus').value,entries,total:entries.reduce((s,r)=>s+r.minutes,0),updatedAt:new Date().toISOString()});
+  await loadSavedWeeks();document.getElementById('weekEditor').classList.remove('show');alert('Cambios guardados.');
+});
+
+(async()=>{try{await openDB();initWeek();await loadSavedWeeks();}catch(e){console.error(e);alert('No fue posible abrir el almacenamiento local.');initWeek();}})();
+</script>
+
+</body>
+</html>
