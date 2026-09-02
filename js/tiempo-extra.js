@@ -5,6 +5,7 @@ let savedWeekData=[];
 let editingId=null;
 let savedWeeksSort={key:'start',direction:'desc'};
 let selectedSavedWeekIds=new Set();
+let savedWeeksSearch='';
 let db=null;
 
 const DB_NAME='FinanzasFamiliaresDB';
@@ -204,11 +205,119 @@ function sortValueForWeek(week,key){
   }
 }
 
+
+function normalizeSearchText(value){
+  return String(value??'')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase();
+}
+
+function weekMatchesSearch(week){
+  const query=normalizeSearchText(savedWeeksSearch).trim();
+  if(!query)return true;
+
+  const activities=(week.entries||[])
+    .map(entry=>entry.activity||'')
+    .join(' ');
+
+  const haystack=[
+    week.periodo,
+    week.start,
+    week.end,
+    formatDateEs(week.start),
+    formatDateEs(week.end),
+    week.report,
+    formatDateEs(week.report),
+    week.pay,
+    formatDateEs(week.pay),
+    week.status||'Borrador',
+    hhmm(week.total||0),
+    activities
+  ].map(normalizeSearchText).join(' ');
+
+  return query
+    .split(/\s+/)
+    .filter(Boolean)
+    .every(term=>haystack.includes(term));
+}
+
+function ensureSavedWeeksSearchUI(){
+  const body=document.getElementById('savedWeeks');
+  const table=body?.closest('table');
+  if(!table)return;
+
+  const cardBody=table.closest('.card-body');
+  if(!cardBody || document.getElementById('savedWeeksSearch'))return;
+
+  const tableWrap=table.parentElement;
+  if(!tableWrap)return;
+
+  const row=document.createElement('div');
+  row.className='te-search-row';
+  row.innerHTML=`
+    <div class="te-search-box">
+      <span class="te-search-icon">⌕</span>
+      <input id="savedWeeksSearch" type="search" placeholder="Buscar periodo, fecha, actividad, estado..." autocomplete="off">
+      <button id="clearSavedWeeksSearch" class="te-search-clear" type="button" title="Limpiar búsqueda">×</button>
+    </div>
+    <div class="te-search-count" id="savedWeeksSearchCount"></div>
+  `;
+
+  tableWrap.parentNode.insertBefore(row,tableWrap);
+
+  const input=document.getElementById('savedWeeksSearch');
+  const clear=document.getElementById('clearSavedWeeksSearch');
+
+  input.value=savedWeeksSearch;
+  input.addEventListener('input',()=>{
+    savedWeeksSearch=input.value;
+    renderSavedWeeks();
+  });
+
+  clear.addEventListener('click',()=>{
+    savedWeeksSearch='';
+    input.value='';
+    renderSavedWeeks();
+    input.focus();
+  });
+
+  if(!document.getElementById('teSearchStyle')){
+    const style=document.createElement('style');
+    style.id='teSearchStyle';
+    style.textContent=`
+      .te-search-row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin:0 0 12px}
+      .te-search-box{position:relative;display:flex;align-items:center;max-width:420px;width:100%}
+      .te-search-box input{
+        width:100%;height:34px;border:1px solid #e4e7ec;border-radius:9px;background:#fff;
+        padding:6px 34px 6px 31px;font-size:12px;color:#344054;outline:none
+      }
+      .te-search-box input:focus{border-color:#84adff;box-shadow:0 0 0 3px #eef4ff}
+      .te-search-icon{position:absolute;left:10px;color:#98a2b3;font-size:14px;pointer-events:none}
+      .te-search-clear{
+        position:absolute;right:7px;width:22px;height:22px;border:0;background:transparent;
+        color:#98a2b3;border-radius:6px;font-size:17px;line-height:1;cursor:pointer;padding:0
+      }
+      .te-search-clear:hover{background:#f2f4f7;color:#475467}
+      .te-search-count{font-size:11px;color:#667085;white-space:nowrap}
+      @media(max-width:680px){.te-search-row{align-items:stretch;flex-direction:column}.te-search-box{max-width:none}}
+    `;
+    document.head.appendChild(style);
+  }
+}
+
+function updateSavedWeeksSearchCount(filteredCount,totalCount){
+  const el=document.getElementById('savedWeeksSearchCount');
+  if(!el)return;
+  el.textContent=savedWeeksSearch.trim()
+    ? `${filteredCount} de ${totalCount} registros`
+    : `${totalCount} registros`;
+}
+
 function getSortedSavedWeeks(){
   const {key,direction}=savedWeeksSort;
   const factor=direction==='asc'?1:-1;
 
-  return [...savedWeekData].sort((a,b)=>{
+  return savedWeekData.filter(weekMatchesSearch).sort((a,b)=>{
     const av=sortValueForWeek(a,key);
     const bv=sortValueForWeek(b,key);
 
@@ -346,6 +455,10 @@ function ensureSavedWeeksBulkUI(){
       .te-tool-btn:disabled{opacity:.45;cursor:not-allowed}
       .te-tool-danger{color:#b42318;border-color:#fecdca}
       .te-tool-danger:not(:disabled):hover{background:#fef3f2;border-color:#fda29b}
+      .te-clickable-row{cursor:pointer;transition:background .12s ease}
+      .te-clickable-row:focus{outline:2px solid #84adff;outline-offset:-2px}
+      @media (hover:hover) and (pointer:fine){.te-clickable-row:hover{background:#f8fafc}}
+
       #savedWeeks td:first-child,#savedWeeks th:first-child{text-align:center}
       #savedWeeks input[type="checkbox"],#selectAllSavedWeeks{width:15px;height:15px;cursor:pointer;accent-color:#155eef}
     `;
@@ -406,8 +519,11 @@ function bindSavedWeekSelectors(){
 
 function renderSavedWeeks(){
   const body=document.getElementById('savedWeeks');
+  ensureSavedWeeksSearchUI();
+
   if(!savedWeekData.length){
     body.innerHTML='<tr><td colspan="8" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
+    updateSavedWeeksSearchCount(0,0);
     enableSavedWeeksSorting();
     updateSavedWeeksHeaderIndicators();
     ensureSavedWeeksBulkUI();
@@ -416,6 +532,16 @@ function renderSavedWeeks(){
   }
 
   const orderedWeeks=getSortedSavedWeeks();
+  updateSavedWeeksSearchCount(orderedWeeks.length,savedWeekData.length);
+
+  if(!orderedWeeks.length){
+    body.innerHTML='<tr><td colspan="8" style="text-align:center;color:#667085;padding:24px">No se encontraron registros que coincidan con la búsqueda.</td></tr>';
+    enableSavedWeeksSorting();
+    updateSavedWeeksHeaderIndicators();
+    ensureSavedWeeksBulkUI();
+    bindSavedWeekSelectors();
+    return;
+  }
   body.innerHTML=orderedWeeks.map(w=>`
     <tr>
       <td><input type="checkbox" data-select-week="${w.id}" aria-label="Seleccionar periodo ${w.periodo}"></td>
@@ -426,15 +552,40 @@ function renderSavedWeeks(){
       <td>${formatDateEs(w.pay)}</td>
       <td><span class="status-pill">${w.status||'Borrador'}</span></td>
       <td>
-        <button class="action-btn" data-view="${w.id}">Ver</button>
         <button class="action-btn" data-edit="${w.id}">Editar</button>
         <button class="action-btn danger" data-delete="${w.id}">Eliminar</button>
       </td>
     </tr>`).join('');
 
-  body.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>openWeekView(Number(b.dataset.view))));
-  body.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>openEditor(Number(b.dataset.edit))));
-  body.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteWeek(Number(b.dataset.delete))));
+  body.querySelectorAll('tr').forEach(row=>{
+    const checkbox=row.querySelector('[data-select-week]');
+    const id=checkbox?Number(checkbox.dataset.selectWeek):null;
+    if(!id)return;
+
+    row.classList.add('te-clickable-row');
+    row.tabIndex=0;
+    row.setAttribute('role','button');
+    row.setAttribute('aria-label',`Ver detalle del periodo ${row.children[1]?.textContent?.trim()||''}`);
+
+    const openRow=event=>{
+      if(event.type==='keydown' && event.key!=='Enter' && event.key!==' ')return;
+      if(event.target.closest('button,input,select,a,label'))return;
+      if(event.type==='keydown')event.preventDefault();
+      openWeekView(id);
+    };
+
+    row.addEventListener('click',openRow);
+    row.addEventListener('keydown',openRow);
+  });
+
+  body.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',e=>{
+    e.stopPropagation();
+    openEditor(Number(b.dataset.edit));
+  }));
+  body.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',e=>{
+    e.stopPropagation();
+    deleteWeek(Number(b.dataset.delete));
+  }));
   enableSavedWeeksSorting();
   updateSavedWeeksHeaderIndicators();
   ensureSavedWeeksBulkUI();
