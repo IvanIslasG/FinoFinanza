@@ -380,7 +380,7 @@ function guessField(header){
   if(/^(fecha|dia|date)$/.test(h) || h.includes('fecha actividad')) return 'date';
   if(h.includes('hora inicio') || h==='inicio' || h==='entrada' || h==='desde') return 'start';
   if(h.includes('hora fin') || h==='fin' || h==='salida' || h==='hasta') return 'end';
-  if(h==='horas' || h==='hora' || h==='te' || h.includes('total horas') || h.includes('tiempo extra')) return 'hours';
+  if(h==='horas' || h==='hora' || h.includes('total horas')) return 'hours';
   if(h.includes('actividad') || h.includes('descripcion') || h.includes('detalle') || h.includes('trabajo') || h.includes('motivo') || h.includes('concepto')) return 'activity';
   if(h.includes('periodo') || h.includes('semana')) return 'period';
   if(h.includes('fecha reporte') || h==='reporte' || h.includes('reportado')) return 'report';
@@ -417,14 +417,32 @@ function parseFlexibleDate(value){
   if(value instanceof Date && !isNaN(value))return toInputDate(value);
   const s=String(value).trim();
 
+  function validYMD(year,month,day){
+    const d=new Date(year,month-1,day,12,0,0);
+    if(
+      d.getFullYear()!==year ||
+      d.getMonth()!==month-1 ||
+      d.getDate()!==day
+    ) return '';
+    return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+
   let m=s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if(m)return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  if(m)return validYMD(Number(m[1]),Number(m[2]),Number(m[3]));
 
   m=s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
   if(m){
+    const a=Number(m[1]), b=Number(m[2]);
     let year=Number(m[3]);
     if(year<100)year+=year>=70?1900:2000;
-    return `${year}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+
+    // Si una de las dos primeras partes es > 12, la interpretación es inequívoca.
+    if(a>12 && b<=12) return validYMD(year,b,a); // DD/MM/YY
+    if(b>12 && a<=12) return validYMD(year,a,b); // MM/DD/YY
+
+    // Para fechas ambiguas (p. ej. 01/02/26) preferimos DD/MM,
+    // que es el formato habitual en México.
+    return validYMD(year,b,a) || validYMD(year,a,b);
   }
 
   const d=new Date(s);
@@ -618,6 +636,20 @@ function analyzeRows(rows,sourceLabel='Tabla pegada'){
   const mapping={};
   headers.forEach((h,i)=>mapping[i]=guessField(h));
 
+  // Formato frecuente: una celda "TE" combinada sobre dos columnas:
+  // TE | [vacío] | Horas  => Inicio | Fin | Horas
+  headers.forEach((header,i)=>{
+    if(normalizeHeader(header)==='te'){
+      const nextHeader=normalizeHeader(headers[i+1]??'');
+      const afterNext=normalizeHeader(headers[i+2]??'');
+      if(!nextHeader && (afterNext==='horas' || afterNext==='hora')){
+        mapping[i]='start';
+        mapping[i+1]='end';
+        mapping[i+2]='hours';
+      }
+    }
+  });
+
   tableImportState={rows:normalized,headerRow,mapping,sourceLabel};
   renderMappingPreview();
 }
@@ -769,9 +801,12 @@ function rowsToImportedWeeks(){
     if(carryPay)week.pay=carryPay;
 
     const dateObj=new Date(date+'T12:00:00');
+    if(isNaN(dateObj))continue;
     const jsDay=dateObj.getDay();
     const index=jsDay===0?6:jsDay-1;
+    if(index<0 || index>6)continue;
     const existing=week.entries[index];
+    if(!existing)continue;
 
     // If a source has multiple entries on the same date, preserve the total and concatenate activity.
     if(existing.minutes>0 || existing.activity){
