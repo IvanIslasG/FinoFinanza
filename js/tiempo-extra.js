@@ -200,6 +200,19 @@ function paymentStatusForWeek(week){
   if(paid===total)return 'Pagado completo';
   return 'Revisar diferencia';
 }
+
+function paymentStatusClass(status){
+  const normalized=normalizeHeader(status);
+
+  if(normalized==='pagado completo')return 'te-status-green';
+  if(normalized==='pago parcial')return 'te-status-amber';
+  if(normalized==='pendiente de pago')return 'te-status-amber';
+  if(normalized==='revisar diferencia')return 'te-status-red';
+  if(normalized==='con diferencia')return 'te-status-red';
+
+  return 'te-status-neutral';
+}
+
 function parseHoursInputToMinutes(value){
   const text=String(value??'').trim().replace(',','.');
   if(!text)return 0;
@@ -649,6 +662,27 @@ function ensureSavedWeeksBulkUI(){
       .te-tool-btn:disabled{opacity:.45;cursor:not-allowed}
       .te-tool-danger{color:#b42318;border-color:#fecdca}
       .te-tool-danger:not(:disabled):hover{background:#fef3f2;border-color:#fda29b}
+
+      .status-pill{
+        display:inline-flex!important;align-items:center;gap:6px;padding:5px 8px;border-radius:999px;
+        font-size:11px;font-weight:800;border:1px solid transparent
+      }
+      .te-status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:0 0 7px}
+      .te-status-green{background:#ecfdf3!important;color:#067647!important;border-color:#abefc6!important}
+      .te-status-green .te-status-dot{background:#12b76a}
+      .te-status-amber{background:#fffaeb!important;color:#b54708!important;border-color:#fedf89!important}
+      .te-status-amber .te-status-dot{background:#f79009}
+      .te-status-red{background:#fef3f2!important;color:#b42318!important;border-color:#fecdca!important}
+      .te-status-red .te-status-dot{background:#f04438}
+      .te-status-neutral{background:#f2f4f7!important;color:#475467!important;border-color:#e4e7ec!important}
+      .te-status-neutral .te-status-dot{background:#98a2b3}
+      .te-icon-action{
+        width:28px;height:28px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;
+        display:inline-grid;place-items:center;padding:0;font-size:13px;cursor:pointer;line-height:1
+      }
+      .te-icon-action:hover{background:#f8fafc;border-color:#d0d5dd}
+      .te-icon-danger:hover{background:#fef3f2;border-color:#fda29b}
+
       .te-clickable-row{cursor:pointer;transition:background .12s ease}
       .te-clickable-row:focus{outline:2px solid #84adff;outline-offset:-2px}
       @media (hover:hover) and (pointer:fine){.te-clickable-row:hover{background:#f8fafc}}
@@ -747,10 +781,10 @@ function renderSavedWeeks(){
       <td>${formatDateEs(w.pay)}</td>
       <td><strong>${hhmm(paidMinutesForWeek(w))}</strong></td>
       <td><strong>${hhmm(pendingMinutesForWeek(w))}</strong></td>
-      <td><span class="status-pill">${paymentStatusForWeek(w)}</span></td>
+      <td><span class="status-pill ${paymentStatusClass(paymentStatusForWeek(w))}" title="${paymentStatusForWeek(w)}"><span class="te-status-dot"></span>${paymentStatusForWeek(w)}</span></td>
       <td>
-        <button class="action-btn" data-edit="${w.id}">Editar</button>
-        <button class="action-btn danger" data-delete="${w.id}">Eliminar</button>
+        <button class="te-icon-action" data-edit="${w.id}" type="button" title="Editar" aria-label="Editar">✏️</button>
+        <button class="te-icon-action te-icon-danger" data-delete="${w.id}" type="button" title="Eliminar" aria-label="Eliminar">🗑️</button>
       </td>
     </tr>`).join('');
 
