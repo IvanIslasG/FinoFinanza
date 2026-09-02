@@ -237,6 +237,64 @@ async function saveManualReconciliation(id){
   await loadSavedWeeks();
   openWeekView(id);
 }
+
+function ensureSavedWeeksCollapsible(){
+  const body=document.getElementById('savedWeeks');
+  const table=body?.closest('table');
+  const card=table?.closest('.card');
+  if(!card || card.dataset.savedWeeksCollapsible==='1')return;
+
+  const head=card.querySelector('.card-head');
+  const cardBody=card.querySelector('.card-body');
+  if(!head || !cardBody)return;
+
+  card.dataset.savedWeeksCollapsible='1';
+
+  const toggle=document.createElement('button');
+  toggle.type='button';
+  toggle.id='toggleSavedWeeks';
+  toggle.className='te-collapse-btn';
+  toggle.setAttribute('aria-expanded','true');
+  toggle.innerHTML='<span>Ocultar</span><span class="te-collapse-arrow">⌃</span>';
+
+  head.style.cursor='pointer';
+  head.appendChild(toggle);
+
+  const setCollapsed=collapsed=>{
+    cardBody.classList.toggle('te-saved-weeks-collapsed',collapsed);
+    toggle.setAttribute('aria-expanded',String(!collapsed));
+    toggle.querySelector('span:first-child').textContent=collapsed?'Mostrar':'Ocultar';
+    toggle.querySelector('.te-collapse-arrow').textContent=collapsed?'⌄':'⌃';
+  };
+
+  const toggleState=event=>{
+    if(event?.target?.closest('button,input,select,a'))return;
+    setCollapsed(!cardBody.classList.contains('te-saved-weeks-collapsed'));
+  };
+
+  toggle.addEventListener('click',event=>{
+    event.stopPropagation();
+    setCollapsed(!cardBody.classList.contains('te-saved-weeks-collapsed'));
+  });
+  head.addEventListener('click',toggleState);
+
+  if(!document.getElementById('teCollapseStyle')){
+    const style=document.createElement('style');
+    style.id='teCollapseStyle';
+    style.textContent=`
+      .te-collapse-btn{
+        margin-left:auto;min-height:28px;border:1px solid #e4e7ec;background:#fff;color:#667085;
+        border-radius:8px;padding:4px 8px;font-size:11px;font-weight:700;display:inline-flex;
+        align-items:center;gap:5px;cursor:pointer
+      }
+      .te-collapse-btn:hover{background:#f8fafc;color:#344054}
+      .te-collapse-arrow{font-size:13px;line-height:1}
+      .te-saved-weeks-collapsed{display:none}
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 function ensurePaymentColumns(){
   const body=document.getElementById('savedWeeks');
   const table=body?.closest('table');
@@ -1426,6 +1484,7 @@ async function exportTiempoExtraJSON(){
 
 export async function initTiempoExtra(){
   ensureReconciliationUI();
+  setTimeout(ensureSavedWeeksCollapsible,0);
   setTimeout(ensurePaymentColumns,0);
   setTimeout(ensureSavedWeeksBulkUI,0);
   createImportUI();
