@@ -328,7 +328,7 @@ async function saveEdit(){
   document.querySelectorAll('#editorDays [data-ei]').forEach(el=>{
     entries[Number(el.dataset.ei)][el.dataset.ef]=el.value;
   });
-  entries.forEach(r=>r.minutes=minutesBetween(r.start,r.end));
+  entries.forEach(r=>{ if(r.start && r.end) r.minutes=minutesBetween(r.start,r.end); });
 
   await putItem({
     ...w,
@@ -344,6 +344,496 @@ async function saveEdit(){
   await loadSavedWeeks();
   document.getElementById('weekEditor').classList.remove('show');
   alert('Cambios guardados.');
+}
+
+
+// ---------- Importador flexible de tablas / Excel ----------
+let tableImportState={
+  rows:[],
+  headerRow:0,
+  mapping:{},
+  sourceLabel:'Tabla pegada'
+};
+
+const TABLE_FIELDS=[
+  {value:'',label:'Ignorar'},
+  {value:'date',label:'Fecha'},
+  {value:'start',label:'Hora inicio'},
+  {value:'end',label:'Hora fin'},
+  {value:'hours',label:'Horas'},
+  {value:'activity',label:'Actividad'},
+  {value:'period',label:'Periodo / Semana'},
+  {value:'report',label:'Fecha de reporte'},
+  {value:'pay',label:'Fecha de pago'}
+];
+
+function normalizeHeader(value){
+  return String(value??'')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().trim()
+    .replace(/\s+/g,' ');
+}
+
+function guessField(header){
+  const h=normalizeHeader(header);
+  if(!h)return'';
+  if(/^(fecha|dia|date)$/.test(h) || h.includes('fecha actividad')) return 'date';
+  if(h.includes('hora inicio') || h==='inicio' || h==='entrada' || h==='desde') return 'start';
+  if(h.includes('hora fin') || h==='fin' || h==='salida' || h==='hasta') return 'end';
+  if(h==='horas' || h==='hora' || h==='te' || h.includes('total horas') || h.includes('tiempo extra')) return 'hours';
+  if(h.includes('actividad') || h.includes('descripcion') || h.includes('detalle') || h.includes('trabajo') || h.includes('motivo') || h.includes('concepto')) return 'activity';
+  if(h.includes('periodo') || h.includes('semana')) return 'period';
+  if(h.includes('fecha reporte') || h==='reporte' || h.includes('reportado')) return 'report';
+  if(h.includes('fecha pago') || h==='pago' || h.includes('pago estimado')) return 'pay';
+  return '';
+}
+
+function headerScore(row){
+  return row.reduce((score,cell)=>score+(guessField(cell)?1:0),0);
+}
+
+function detectHeaderRow(rows){
+  let bestIndex=0,bestScore=-1;
+  rows.slice(0,25).forEach((row,i)=>{
+    const score=headerScore(row);
+    if(score>bestScore){bestScore=score;bestIndex=i;}
+  });
+  return bestIndex;
+}
+
+function parseDelimitedText(text){
+  const clean=String(text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+  if(!clean)return[];
+  const lines=clean.split('\n').filter(line=>line.trim().length);
+  const tabCount=(lines[0].match(/\t/g)||[]).length;
+  const semicolonCount=(lines[0].match(/;/g)||[]).length;
+  const commaCount=(lines[0].match(/,/g)||[]).length;
+  const delimiter=tabCount>=Math.max(semicolonCount,commaCount)?'\t':(semicolonCount>=commaCount?';':',');
+  return lines.map(line=>line.split(delimiter).map(v=>v.trim()));
+}
+
+function parseFlexibleDate(value){
+  if(value==null || value==='')return'';
+  if(value instanceof Date && !isNaN(value))return toInputDate(value);
+  const s=String(value).trim();
+
+  let m=s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if(m)return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+
+  m=s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+  if(m){
+    let year=Number(m[3]);
+    if(year<100)year+=year>=70?1900:2000;
+    return `${year}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+  }
+
+  const d=new Date(s);
+  if(!isNaN(d))return toInputDate(d);
+  return '';
+}
+
+function parseFlexibleTime(value){
+  if(value==null || value==='')return'';
+  if(typeof value==='number' && value>=0 && value<1){
+    const mins=Math.round(value*24*60);
+    return `${String(Math.floor(mins/60)%24).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}`;
+  }
+
+  let s=String(value).trim().toLowerCase()
+    .replace(/\./g,'')
+    .replace(/\s+/g,' ');
+
+  const am=/\b(am|a m)\b/.test(s);
+  const pm=/\b(pm|p m)\b/.test(s);
+  s=s.replace(/\b(am|pm|a m|p m)\b/g,'').trim();
+
+  const m=s.match(/(\d{1,2})[:.](\d{2})/);
+  if(!m)return'';
+  let h=Number(m[1]),min=Number(m[2]);
+  if(pm && h<12)h+=12;
+  if(am && h===12)h=0;
+  if(h>23 || min>59)return'';
+  return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+}
+
+function parseDurationMinutes(value){
+  if(value==null || value==='')return 0;
+  if(typeof value==='number'){
+    if(value>=0 && value<1)return Math.round(value*24*60);
+    if(value>=0 && value<=24)return Math.round(value*60);
+  }
+  const s=String(value).trim().toLowerCase().replace(',','.');
+  let m=s.match(/^(\d{1,3}):(\d{2})$/);
+  if(m)return Number(m[1])*60+Number(m[2]);
+  m=s.match(/^(\d+(?:\.\d+)?)\s*(h|hrs?|horas?)?$/);
+  if(m)return Math.round(Number(m[1])*60);
+  return 0;
+}
+
+function mondayFromDateString(dateStr){
+  const d=new Date(dateStr+'T12:00:00');
+  return toInputDate(nearestMonday(d));
+}
+
+function sundayFromMonday(mondayStr){
+  const d=new Date(mondayStr+'T12:00:00');
+  d.setDate(d.getDate()+6);
+  return toInputDate(d);
+}
+
+function nextMondayFromWeek(mondayStr){
+  const d=new Date(mondayStr+'T12:00:00');
+  d.setDate(d.getDate()+7);
+  return toInputDate(d);
+}
+
+function createImportUI(){
+  if(document.getElementById('teTableImportModal'))return;
+
+  const style=document.createElement('style');
+  style.textContent=`
+    .te-import-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .te-import-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.48);z-index:9999;padding:28px;overflow:auto}
+    .te-import-overlay.show{display:block}
+    .te-import-modal{max-width:1080px;margin:0 auto;background:#fff;border-radius:18px;border:1px solid #e4e7ec;box-shadow:0 24px 70px rgba(15,23,42,.22);overflow:hidden}
+    .te-import-head{padding:18px 20px;border-bottom:1px solid #e4e7ec;display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+    .te-import-head h3{margin:0 0 4px;font-size:18px}.te-import-head p{margin:0;color:#667085;font-size:12px}
+    .te-import-body{padding:20px}.te-import-area{width:100%;min-height:170px;border:1px solid #d0d5dd;border-radius:12px;padding:12px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+    .te-import-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .te-import-preview{display:none;margin-top:18px}.te-import-preview.show{display:block}
+    .te-import-summary{padding:11px 12px;background:#f8fafc;border:1px solid #e4e7ec;border-radius:10px;color:#475467;font-size:12px;margin-bottom:12px}
+    .te-map-wrap{overflow:auto;border:1px solid #e4e7ec;border-radius:12px}
+    .te-map-table{width:100%;border-collapse:collapse;min-width:760px}.te-map-table th,.te-map-table td{padding:8px;border-bottom:1px solid #e4e7ec;font-size:11px;text-align:left;vertical-align:top}
+    .te-map-table th{background:#f8fafc}.te-map-table select{width:100%;min-width:115px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;background:#fff}
+    .te-import-error{display:none;margin-top:10px;padding:10px 12px;border-radius:9px;background:#fef3f2;color:#b42318;font-size:12px}
+    @media(max-width:720px){.te-import-overlay{padding:10px}.te-import-body{padding:14px}}
+  `;
+  document.head.appendChild(style);
+
+  const overlay=document.createElement('div');
+  overlay.id='teTableImportModal';
+  overlay.className='te-import-overlay';
+  overlay.innerHTML=`
+    <div class="te-import-modal" role="dialog" aria-modal="true" aria-labelledby="teImportTitle">
+      <div class="te-import-head">
+        <div>
+          <h3 id="teImportTitle">Importar tiempo extra desde una tabla</h3>
+          <p>Pega celdas copiadas desde Excel/Google Sheets o selecciona un archivo Excel. Revisa las columnas antes de guardar.</p>
+        </div>
+        <button class="copy-btn" id="teImportClose" type="button">Cerrar</button>
+      </div>
+      <div class="te-import-body">
+        <textarea class="te-import-area" id="teImportPaste" placeholder="Pega aquí tu tabla. Ejemplo:&#10;Fecha    Inicio    Fin    Horas    Actividad    Periodo&#10;31/08/2026    16:00    19:00    03:00    Atención INS2748    36"></textarea>
+        <div class="te-import-actions">
+          <button class="primary-btn" id="teAnalyzePaste" type="button">Analizar tabla</button>
+          <button class="secondary-btn" id="teChooseExcel" type="button">Seleccionar Excel</button>
+          <input id="teExcelInput" type="file" accept=".xlsx,.xls,.xlsm" hidden>
+        </div>
+        <div class="te-import-error" id="teImportError"></div>
+        <div class="te-import-preview" id="teImportPreview">
+          <div class="te-import-summary" id="teImportSummary"></div>
+          <div class="te-map-wrap">
+            <table class="te-map-table">
+              <thead id="teMapHead"></thead>
+              <tbody id="teMapBody"></tbody>
+            </table>
+          </div>
+          <div class="te-import-actions">
+            <button class="primary-btn" id="teCommitImport" type="button">Importar registros</button>
+            <button class="secondary-btn" id="teResetImport" type="button">Limpiar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const actionArea=document.getElementById('exportTEJson')?.parentElement;
+  if(actionArea){
+    const pasteBtn=document.createElement('button');
+    pasteBtn.type='button';
+    pasteBtn.className='secondary-btn';
+    pasteBtn.id='pasteTETableBtn';
+    pasteBtn.textContent='Pegar tabla';
+
+    const excelBtn=document.createElement('button');
+    excelBtn.type='button';
+    excelBtn.className='secondary-btn';
+    excelBtn.id='importTEExcelBtn';
+    excelBtn.textContent='Importar Excel';
+
+    actionArea.insertBefore(pasteBtn,actionArea.firstChild);
+    actionArea.insertBefore(excelBtn,pasteBtn.nextSibling);
+  }
+
+  document.getElementById('pasteTETableBtn')?.addEventListener('click',()=>openImportModal());
+  document.getElementById('importTEExcelBtn')?.addEventListener('click',()=>{
+    openImportModal();
+    document.getElementById('teExcelInput').click();
+  });
+  document.getElementById('teImportClose').addEventListener('click',closeImportModal);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)closeImportModal();});
+  document.getElementById('teAnalyzePaste').addEventListener('click',analyzePastedTable);
+  document.getElementById('teChooseExcel').addEventListener('click',()=>document.getElementById('teExcelInput').click());
+  document.getElementById('teExcelInput').addEventListener('change',handleExcelFile);
+  document.getElementById('teCommitImport').addEventListener('click',commitMappedTableImport);
+  document.getElementById('teResetImport').addEventListener('click',resetTableImport);
+}
+
+function openImportModal(){
+  document.getElementById('teTableImportModal')?.classList.add('show');
+}
+function closeImportModal(){
+  document.getElementById('teTableImportModal')?.classList.remove('show');
+}
+function showImportError(message){
+  const box=document.getElementById('teImportError');
+  box.textContent=message;
+  box.style.display='block';
+}
+function clearImportError(){
+  const box=document.getElementById('teImportError');
+  box.textContent='';
+  box.style.display='none';
+}
+function resetTableImport(){
+  tableImportState={rows:[],headerRow:0,mapping:{},sourceLabel:'Tabla pegada'};
+  document.getElementById('teImportPaste').value='';
+  document.getElementById('teImportPreview').classList.remove('show');
+  clearImportError();
+}
+
+function analyzeRows(rows,sourceLabel='Tabla pegada'){
+  clearImportError();
+  const normalized=rows
+    .map(row=>Array.from(row||[]).map(v=>v==null?'':String(v).trim()))
+    .filter(row=>row.some(cell=>cell!==''));
+
+  if(normalized.length<2){
+    showImportError('No se detectaron suficientes filas para importar.');
+    return;
+  }
+
+  const headerRow=detectHeaderRow(normalized);
+  const headers=normalized[headerRow];
+  const mapping={};
+  headers.forEach((h,i)=>mapping[i]=guessField(h));
+
+  tableImportState={rows:normalized,headerRow,mapping,sourceLabel};
+  renderMappingPreview();
+}
+
+function analyzePastedTable(){
+  const rows=parseDelimitedText(document.getElementById('teImportPaste').value);
+  analyzeRows(rows,'Tabla pegada');
+}
+
+function renderMappingPreview(){
+  const {rows,headerRow,mapping,sourceLabel}=tableImportState;
+  const headers=rows[headerRow];
+  const dataRows=rows.slice(headerRow+1);
+  const mappedCount=Object.values(mapping).filter(Boolean).length;
+
+  document.getElementById('teImportSummary').textContent=
+    `${sourceLabel} · ${dataRows.length} filas de datos · ${headers.length} columnas · ${mappedCount} columnas reconocidas automáticamente.`;
+
+  const head=document.getElementById('teMapHead');
+  const body=document.getElementById('teMapBody');
+
+  const selects=headers.map((header,i)=>{
+    const options=TABLE_FIELDS.map(field=>
+      `<option value="${field.value}" ${mapping[i]===field.value?'selected':''}>${field.label}</option>`
+    ).join('');
+    return `<th><div style="font-weight:800;margin-bottom:5px">${header||`Columna ${i+1}`}</div><select data-map-col="${i}">${options}</select></th>`;
+  }).join('');
+
+  head.innerHTML=`<tr>${selects}</tr>`;
+
+  const previewRows=dataRows.slice(0,8);
+  body.innerHTML=previewRows.map(row=>
+    `<tr>${headers.map((_,i)=>`<td>${row[i]??''}</td>`).join('')}</tr>`
+  ).join('');
+
+  head.querySelectorAll('[data-map-col]').forEach(select=>{
+    select.addEventListener('change',e=>{
+      tableImportState.mapping[Number(e.target.dataset.mapCol)]=e.target.value;
+    });
+  });
+
+  document.getElementById('teImportPreview').classList.add('show');
+}
+
+async function handleExcelFile(event){
+  const file=event.target.files?.[0];
+  event.target.value='';
+  if(!file)return;
+
+  clearImportError();
+  document.getElementById('teImportSummary').textContent='Leyendo archivo Excel…';
+  document.getElementById('teImportPreview').classList.add('show');
+
+  try{
+    const XLSX=await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
+    const buffer=await file.arrayBuffer();
+    const workbook=XLSX.read(buffer,{type:'array',cellDates:true});
+
+    let best=null;
+    for(const sheetName of workbook.SheetNames){
+      const sheet=workbook.Sheets[sheetName];
+      const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:''});
+      const normalized=rows.filter(row=>Array.isArray(row)&&row.some(cell=>String(cell).trim()));
+      if(!normalized.length)continue;
+      const header=detectHeaderRow(normalized);
+      const score=headerScore(normalized[header]||[]);
+      if(!best || score>best.score){
+        best={sheetName,rows:normalized,score};
+      }
+    }
+
+    if(!best){
+      showImportError('No se encontraron tablas utilizables en el archivo.');
+      return;
+    }
+
+    analyzeRows(best.rows,`${file.name} · hoja "${best.sheetName}"`);
+  }catch(error){
+    console.error(error);
+    showImportError('No se pudo leer el archivo Excel. Puedes copiar la tabla desde Excel y usar “Pegar tabla” como alternativa.');
+  }
+}
+
+function mappedColumnIndex(field){
+  const entry=Object.entries(tableImportState.mapping).find(([,value])=>value===field);
+  return entry?Number(entry[0]):-1;
+}
+
+function valueAt(row,field){
+  const index=mappedColumnIndex(field);
+  return index>=0?(row[index]??''):'';
+}
+
+function rowsToImportedWeeks(){
+  const dataRows=tableImportState.rows.slice(tableImportState.headerRow+1);
+  if(mappedColumnIndex('date')<0){
+    throw new Error('Debes asignar una columna como Fecha.');
+  }
+  if(mappedColumnIndex('hours')<0 && (mappedColumnIndex('start')<0 || mappedColumnIndex('end')<0)){
+    throw new Error('Necesitamos Horas, o bien Hora inicio + Hora fin.');
+  }
+
+  const groups=new Map();
+  let carryPeriod='',carryReport='',carryPay='';
+
+  for(const row of dataRows){
+    const date=parseFlexibleDate(valueAt(row,'date'));
+    if(!date)continue;
+
+    const rawPeriod=String(valueAt(row,'period')||'').trim();
+    const rawReport=parseFlexibleDate(valueAt(row,'report'));
+    const rawPay=parseFlexibleDate(valueAt(row,'pay'));
+    if(rawPeriod)carryPeriod=rawPeriod;
+    if(rawReport)carryReport=rawReport;
+    if(rawPay)carryPay=rawPay;
+
+    const start=parseFlexibleTime(valueAt(row,'start'));
+    const end=parseFlexibleTime(valueAt(row,'end'));
+    let minutes=parseDurationMinutes(valueAt(row,'hours'));
+    if(!minutes && start && end)minutes=minutesBetween(start,end);
+
+    const activity=String(valueAt(row,'activity')||'').trim();
+
+    // Ignore apparent total/footer rows with no usable daily record.
+    if(!minutes && !activity && !start && !end)continue;
+
+    const monday=mondayFromDateString(date);
+    if(!groups.has(monday)){
+      const mondayDate=new Date(monday+'T12:00:00');
+      groups.set(monday,{
+        periodo:carryPeriod || String(isoWeekNumber(mondayDate)),
+        start:monday,
+        end:sundayFromMonday(monday),
+        report:carryReport || nextMondayFromWeek(monday),
+        pay:carryPay || secondSaturdayAfter(carryReport || nextMondayFromWeek(monday)),
+        status:'Borrador',
+        importedAt:new Date().toISOString(),
+        importSource:tableImportState.sourceLabel,
+        entries:Array.from({length:7},(_,i)=>{
+          const d=new Date(monday+'T12:00:00');d.setDate(d.getDate()+i);
+          return {date:toInputDate(d),start:'',end:'',activity:'',minutes:0};
+        })
+      });
+    }
+
+    const week=groups.get(monday);
+    if(carryPeriod)week.periodo=carryPeriod;
+    if(carryReport){week.report=carryReport;week.pay=carryPay||secondSaturdayAfter(carryReport);}
+    if(carryPay)week.pay=carryPay;
+
+    const dateObj=new Date(date+'T12:00:00');
+    const jsDay=dateObj.getDay();
+    const index=jsDay===0?6:jsDay-1;
+    const existing=week.entries[index];
+
+    // If a source has multiple entries on the same date, preserve the total and concatenate activity.
+    if(existing.minutes>0 || existing.activity){
+      existing.minutes+=minutes;
+      if(activity)existing.activity=[existing.activity,activity].filter(Boolean).join(' / ');
+      if(!existing.start && start)existing.start=start;
+      if(end)existing.end=end;
+    }else{
+      week.entries[index]={date,start,end,activity,minutes};
+    }
+  }
+
+  return Array.from(groups.values()).map(week=>({
+    ...week,
+    total:week.entries.reduce((sum,r)=>sum+(r.minutes||0),0)
+  })).filter(week=>week.total>0 || week.entries.some(r=>r.activity));
+}
+
+async function commitMappedTableImport(){
+  clearImportError();
+
+  let weeks;
+  try{
+    weeks=rowsToImportedWeeks();
+  }catch(error){
+    showImportError(error.message);
+    return;
+  }
+
+  if(!weeks.length){
+    showImportError('No se pudieron construir semanas con los datos proporcionados.');
+    return;
+  }
+
+  const existing=await getAll();
+  const existingByStart=new Map(existing.map(w=>[w.start,w]));
+  const duplicateCount=weeks.filter(w=>existingByStart.has(w.start)).length;
+
+  let duplicateMode='skip';
+  if(duplicateCount){
+    const replace=confirm(
+      `Se detectaron ${duplicateCount} semana(s) que ya existen.\n\nAceptar = reemplazar esas semanas.\nCancelar = omitir duplicados.`
+    );
+    duplicateMode=replace?'replace':'skip';
+  }
+
+  let imported=0,replaced=0,skipped=0;
+  for(const week of weeks){
+    const duplicate=existingByStart.get(week.start);
+    if(duplicate){
+      if(duplicateMode==='skip'){skipped++;continue;}
+      await putItem({...week,id:duplicate.id,createdAt:duplicate.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()});
+      replaced++;
+    }else{
+      await addItem({...week,createdAt:new Date().toISOString()});
+      imported++;
+    }
+  }
+
+  await loadSavedWeeks();
+  closeImportModal();
+  alert(`Importación terminada.\nNuevas: ${imported}\nReemplazadas: ${replaced}\nOmitidas: ${skipped}`);
 }
 
 async function clearStore(){return new Promise((resolve,reject)=>{const req=db.transaction(STORE,'readwrite').objectStore(STORE).clear();req.onsuccess=()=>resolve();req.onerror=()=>reject(req.error);});}
@@ -374,6 +864,7 @@ async function exportTiempoExtraJSON(){
 }
 
 export async function initTiempoExtra(){
+  createImportUI();
   document.getElementById('weekReportDate').addEventListener('change',setExpectedPay);
   document.getElementById('weekStart').addEventListener('change',buildWeek);
   document.getElementById('saveWeek').addEventListener('click',saveCurrentWeek);
