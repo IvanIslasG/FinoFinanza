@@ -379,6 +379,14 @@ function renderReconciliation(week){
     </div>
     <div class="te-recon-future">Origen actual: <strong>${source}</strong>. Más adelante el lector de volantes TELMEX podrá alimentar este mismo dato automáticamente.</div>
   `;
+  const paidInput=document.getElementById('reconPaidHours');
+  paidInput?.addEventListener('focus',()=>{
+    setTimeout(()=>paidInput.select(),0);
+  });
+  paidInput?.addEventListener('click',()=>{
+    paidInput.select();
+  });
+
   document.getElementById('saveReconciliationBtn')?.addEventListener('click',()=>saveManualReconciliation(week.id));
 }
 
