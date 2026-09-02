@@ -184,6 +184,133 @@ async function loadSavedWeeks(){
   renderSavedWeeks();
 }
 
+
+function paidMinutesForWeek(week){
+  return Math.max(0,Number(week.paidMinutes||0));
+}
+function pendingMinutesForWeek(week){
+  return Math.max(0,Number(week.total||0)-paidMinutesForWeek(week));
+}
+function paymentStatusForWeek(week){
+  const total=Math.max(0,Number(week.total||0));
+  const paid=paidMinutesForWeek(week);
+  if(total<=0)return week.status||'Borrador';
+  if(paid<=0)return 'Pendiente de pago';
+  if(paid<total)return 'Pago parcial';
+  if(paid===total)return 'Pagado completo';
+  return 'Revisar diferencia';
+}
+function parseHoursInputToMinutes(value){
+  const text=String(value??'').trim().replace(',','.');
+  if(!text)return 0;
+  let match=text.match(/^(\d{1,3}):(\d{1,2})$/);
+  if(match){
+    const hours=Number(match[1]),minutes=Number(match[2]);
+    if(minutes>59)return NaN;
+    return hours*60+minutes;
+  }
+  if(/^\d+(?:\.\d+)?$/.test(text))return Math.round(Number(text)*60);
+  return NaN;
+}
+async function saveManualReconciliation(id){
+  const week=savedWeekData.find(item=>item.id===id);
+  if(!week)return;
+  const paidInput=document.getElementById('reconPaidHours');
+  const noteInput=document.getElementById('reconNote');
+  if(!paidInput||!noteInput)return;
+  const paid=parseHoursInputToMinutes(paidInput.value);
+  if(Number.isNaN(paid)){
+    alert('Captura las horas como HH:MM o en decimal. Ejemplo: 09:30 o 9.5');
+    paidInput.focus();
+    return;
+  }
+  const updated={
+    ...week,
+    paidMinutes:paid,
+    paymentSource:'manual',
+    paymentNote:noteInput.value.trim(),
+    paymentUpdatedAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+  updated.status=paymentStatusForWeek(updated);
+  await putItem(updated);
+  await loadSavedWeeks();
+  openWeekView(id);
+}
+function ensurePaymentColumns(){
+  const body=document.getElementById('savedWeeks');
+  const table=body?.closest('table');
+  if(!table)return;
+  const headerRow=table.querySelector('thead tr');
+  if(!headerRow||headerRow.querySelector('[data-payment-col="paid"]'))return;
+  const estado=[...headerRow.children].find(th=>normalizeHeader(th.textContent).replace(/[▲▼↕]/g,'').trim()==='estado');
+  const paid=document.createElement('th'); paid.dataset.paymentCol='paid'; paid.textContent='Pagadas';
+  const pending=document.createElement('th'); pending.dataset.paymentCol='pending'; pending.textContent='Pendientes';
+  if(estado){
+    headerRow.insertBefore(paid,estado);
+    headerRow.insertBefore(pending,estado);
+  }else{
+    headerRow.appendChild(paid); headerRow.appendChild(pending);
+  }
+}
+function ensureReconciliationUI(){
+  if(document.getElementById('teReconciliationBox'))return;
+  const panel=document.getElementById('weekViewPanel');
+  const copyHelp=panel?.querySelector('.copy-help');
+  if(!panel||!copyHelp)return;
+  const box=document.createElement('div');
+  box.id='teReconciliationBox';
+  box.className='te-reconciliation-box';
+  copyHelp.parentNode.insertBefore(box,copyHelp);
+  if(!document.getElementById('teReconciliationStyle')){
+    const style=document.createElement('style');
+    style.id='teReconciliationStyle';
+    style.textContent=`
+      .te-reconciliation-box{margin-top:16px;border:1px solid #e4e7ec;border-radius:14px;background:#fff;overflow:hidden}
+      .te-recon-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid #e4e7ec;background:#fbfcfe}
+      .te-recon-kicker{font-size:10px;font-weight:900;letter-spacing:.08em;color:#667085;margin-bottom:3px}
+      .te-recon-source{font-size:10px;color:#667085;border:1px solid #e4e7ec;border-radius:999px;padding:4px 7px;background:#fff}
+      .te-recon-grid{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #e4e7ec}
+      .te-recon-grid>div{padding:12px 14px;border-right:1px solid #e4e7ec}
+      .te-recon-grid>div:last-child{border-right:0}
+      .te-recon-grid span{display:block;font-size:10px;color:#667085;text-transform:uppercase;margin-bottom:4px}
+      .te-recon-grid strong{font-size:14px}
+      .te-recon-form{display:grid;grid-template-columns:180px minmax(220px,1fr) auto;gap:10px;align-items:end;padding:14px 16px}
+      .te-recon-form .field input{height:36px}
+      .te-recon-form .te-tool-btn{height:34px;margin-bottom:1px}
+      .te-recon-future{padding:0 16px 14px;color:#98a2b3;font-size:10px;line-height:1.4}
+      @media(max-width:760px){.te-recon-grid{grid-template-columns:repeat(2,1fr)}.te-recon-form{grid-template-columns:1fr}}
+    `;
+    document.head.appendChild(style);
+  }
+}
+function renderReconciliation(week){
+  ensureReconciliationUI();
+  const box=document.getElementById('teReconciliationBox');
+  if(!box)return;
+  const paid=paidMinutesForWeek(week),pending=pendingMinutesForWeek(week),status=paymentStatusForWeek(week);
+  const source=week.paymentSource==='volante'?'Volante TELMEX':'Manual';
+  box.innerHTML=`
+    <div class="te-recon-head">
+      <div><div class="te-recon-kicker">CONCILIACIÓN DE PAGO</div><strong>Horas reportadas vs. horas pagadas</strong></div>
+      <span class="te-recon-source">${source}</span>
+    </div>
+    <div class="te-recon-grid">
+      <div><span>Reportadas</span><strong>${hhmm(week.total||0)}</strong></div>
+      <div><span>Pagadas</span><strong>${hhmm(paid)}</strong></div>
+      <div><span>Pendientes</span><strong>${hhmm(pending)}</strong></div>
+      <div><span>Estado</span><strong>${status}</strong></div>
+    </div>
+    <div class="te-recon-form">
+      <div class="field"><label>Horas pagadas</label><input id="reconPaidHours" type="text" inputmode="decimal" value="${hhmm(paid)}" placeholder="Ej. 09:30"><div class="mini-hint">Acepta HH:MM o decimal. Ejemplo: 9.5 = 09:30.</div></div>
+      <div class="field"><label>Nota</label><input id="reconNote" type="text" value="${String(week.paymentNote||'').replace(/"/g,'&quot;')}" placeholder="Ej. faltaron 3 horas"></div>
+      <button class="te-tool-btn" id="saveReconciliationBtn" type="button">Guardar conciliación</button>
+    </div>
+    <div class="te-recon-future">Origen actual: <strong>${source}</strong>. Más adelante el lector de volantes TELMEX podrá alimentar este mismo dato automáticamente.</div>
+  `;
+  document.getElementById('saveReconciliationBtn')?.addEventListener('click',()=>saveManualReconciliation(week.id));
+}
+
 function sortValueForWeek(week,key){
   switch(key){
     case 'periodo':{
@@ -198,8 +325,12 @@ function sortValueForWeek(week,key){
       return week.report||'';
     case 'pay':
       return week.pay||'';
+    case 'paid':
+      return paidMinutesForWeek(week);
+    case 'pending':
+      return pendingMinutesForWeek(week);
     case 'status':
-      return String(week.status||'Borrador').toLocaleLowerCase('es');
+      return String(paymentStatusForWeek(week)).toLocaleLowerCase('es');
     default:
       return '';
   }
@@ -230,8 +361,11 @@ function weekMatchesSearch(week){
     formatDateEs(week.report),
     week.pay,
     formatDateEs(week.pay),
-    week.status||'Borrador',
+    paymentStatusForWeek(week),
     hhmm(week.total||0),
+    hhmm(paidMinutesForWeek(week)),
+    hhmm(pendingMinutesForWeek(week)),
+    week.paymentNote||'',
     activities
   ].map(normalizeSearchText).join(' ');
 
@@ -361,6 +495,8 @@ function enableSavedWeeksSorting(){
     ['total','total'],
     ['reporte','report'],
     ['pago estimado','pay'],
+    ['pagadas','paid'],
+    ['pendientes','pending'],
     ['estado','status']
   ];
 
@@ -519,10 +655,11 @@ function bindSavedWeekSelectors(){
 
 function renderSavedWeeks(){
   const body=document.getElementById('savedWeeks');
+  ensurePaymentColumns();
   ensureSavedWeeksSearchUI();
 
   if(!savedWeekData.length){
-    body.innerHTML='<tr><td colspan="8" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
+    body.innerHTML='<tr><td colspan="10" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
     updateSavedWeeksSearchCount(0,0);
     enableSavedWeeksSorting();
     updateSavedWeeksHeaderIndicators();
@@ -535,7 +672,7 @@ function renderSavedWeeks(){
   updateSavedWeeksSearchCount(orderedWeeks.length,savedWeekData.length);
 
   if(!orderedWeeks.length){
-    body.innerHTML='<tr><td colspan="8" style="text-align:center;color:#667085;padding:24px">No se encontraron registros que coincidan con la búsqueda.</td></tr>';
+    body.innerHTML='<tr><td colspan="10" style="text-align:center;color:#667085;padding:24px">No se encontraron registros que coincidan con la búsqueda.</td></tr>';
     enableSavedWeeksSorting();
     updateSavedWeeksHeaderIndicators();
     ensureSavedWeeksBulkUI();
@@ -550,7 +687,9 @@ function renderSavedWeeks(){
       <td><strong>${hhmm(w.total||0)}</strong></td>
       <td>${formatDateEs(w.report)}</td>
       <td>${formatDateEs(w.pay)}</td>
-      <td><span class="status-pill">${w.status||'Borrador'}</span></td>
+      <td><strong>${hhmm(paidMinutesForWeek(w))}</strong></td>
+      <td><strong>${hhmm(pendingMinutesForWeek(w))}</strong></td>
+      <td><span class="status-pill">${paymentStatusForWeek(w)}</span></td>
       <td>
         <button class="action-btn" data-edit="${w.id}">Editar</button>
         <button class="action-btn danger" data-delete="${w.id}">Eliminar</button>
@@ -650,7 +789,7 @@ function openWeekView(id){
   document.getElementById('reportPeriod').textContent=w.periodo||'—';
   document.getElementById('reportDate').textContent=formatDateEs(w.report);
   document.getElementById('reportPay').textContent=formatDateEs(w.pay);
-  document.getElementById('reportStatus').textContent=w.status||'Borrador';
+  document.getElementById('reportStatus').textContent=paymentStatusForWeek(w);
   document.getElementById('reportFootTotal').textContent=hhmm(w.total||0);
 
   const body=document.getElementById('reportRows');
@@ -662,6 +801,8 @@ function openWeekView(id){
       body.appendChild(tr);
     }
   });
+
+  renderReconciliation(w);
 
   const panel=document.getElementById('weekViewPanel');
   panel.dataset.weekId=String(id);
@@ -1284,6 +1425,8 @@ async function exportTiempoExtraJSON(){
 }
 
 export async function initTiempoExtra(){
+  ensureReconciliationUI();
+  setTimeout(ensurePaymentColumns,0);
   setTimeout(ensureSavedWeeksBulkUI,0);
   createImportUI();
   document.getElementById('weekReportDate').addEventListener('change',setExpectedPay);
