@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Finanzas Familiares</title>
+<title>FinoFinanza</title>
 <style>
 :root{
   --bg:#f4f7fb;--surface:#fff;--text:#172033;--muted:#667085;--line:#e4e7ec;
@@ -142,27 +142,27 @@ main{width:100%;max-width:1480px;margin:auto;padding:30px}
 <section class="screen" id="ingresos"><div class="topbar"><div><h2>Ingresos</h2><p>Nómina, renta, extras y Diana.</p></div></div><div class="card"><div class="placeholder"><div class="big">↓</div><h3>Ingresos</h3><p>El lector de volantes TELMEX vivirá aquí.</p></div></div></section>
 
 <section class="screen" id="tiempoextra">
-  <div class="topbar"><div><h2>Tiempo Extra</h2><p>Captura semanal de lunes a domingo y conciliación futura contra nómina.</p></div></div>
+  <div class="topbar"><div><h2>Tiempo Extra</h2></div></div>
 
   <section class="card">
-    <div class="card-head"><h3>Captura semanal</h3><span>Lunes → Domingo</span></div>
+    <div class="card-head"><h3>Captura semanal</h3></div>
     <div class="card-body">
       <div class="week-toolbar">
         <div class="field"><label>Semana que inicia</label><input id="weekStart" type="date"></div>
         <div class="field"><label>Periodo</label><input id="weekPeriod" type="number" min="1" max="53"></div>
         <div class="field"><label>Fecha de reporte al jefe</label><input id="weekReportDate" type="date"></div>
-        <div class="field"><label>Pago estimado</label><input id="weekPayDate" type="date" readonly><div class="mini-hint">Segundo sábado posterior al reporte.</div></div>
+        <div class="field"><label>Pago estimado</label><input id="weekPayDate" type="date" readonly></div>
       </div>
       <div class="week-grid" id="weekGrid"></div>
       <div class="week-summary"><div><small>Total semanal</small><br><strong id="weekTotal">00:00</strong></div><button class="primary-btn" id="saveWeek" type="button">Guardar semana</button></div>
-      <div class="storage-note">Guardado local activo mediante IndexedDB en este navegador.</div>
+      
     </div>
   </section>
 
   <div style="height:22px"></div>
 
   <section class="card">
-    <div class="card-head"><h3>Semanas guardadas</h3><span>Historial local</span></div>
+    <div class="card-head"><h3>Semanas guardadas</h3></div>
     <div class="card-body">
       <div class="export-row">
         <div><strong>Registro de Tiempo Extra</strong><div class="mini-hint">Puedes respaldar todo el historial en un archivo JSON.</div></div>
