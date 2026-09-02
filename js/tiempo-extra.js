@@ -3,6 +3,7 @@ const dayNames=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domi
 let currentWeek=[];
 let savedWeekData=[];
 let editingId=null;
+let savedWeeksSort={key:'start',direction:'desc'};
 let db=null;
 
 const DB_NAME='FinanzasFamiliaresDB';
@@ -180,14 +181,112 @@ async function loadSavedWeeks(){
   savedWeekData.sort((a,b)=>b.start.localeCompare(a.start));
   renderSavedWeeks();
 }
+
+function sortValueForWeek(week,key){
+  switch(key){
+    case 'periodo':{
+      const match=String(week.periodo??'').match(/\d+/);
+      return match?Number(match[0]):-1;
+    }
+    case 'start':
+      return week.start||'';
+    case 'total':
+      return Number(week.total||0);
+    case 'report':
+      return week.report||'';
+    case 'pay':
+      return week.pay||'';
+    case 'status':
+      return String(week.status||'Borrador').toLocaleLowerCase('es');
+    default:
+      return '';
+  }
+}
+
+function getSortedSavedWeeks(){
+  const {key,direction}=savedWeeksSort;
+  const factor=direction==='asc'?1:-1;
+
+  return [...savedWeekData].sort((a,b)=>{
+    const av=sortValueForWeek(a,key);
+    const bv=sortValueForWeek(b,key);
+
+    if(typeof av==='number' && typeof bv==='number'){
+      return (av-bv)*factor;
+    }
+
+    return String(av).localeCompare(String(bv),'es',{numeric:true,sensitivity:'base'})*factor;
+  });
+}
+
+function updateSavedWeeksHeaderIndicators(){
+  document.querySelectorAll('#savedWeeks').forEach(()=>{});
+  const table=document.getElementById('savedWeeks')?.closest('table');
+  if(!table)return;
+
+  table.querySelectorAll('th[data-sort]').forEach(th=>{
+    const label=th.dataset.label||th.textContent.replace(/[▲▼↕]/g,'').trim();
+    th.dataset.label=label;
+    th.style.cursor='pointer';
+    th.style.userSelect='none';
+    th.title='Haz clic para ordenar';
+
+    if(savedWeeksSort.key===th.dataset.sort){
+      th.textContent=`${label} ${savedWeeksSort.direction==='asc'?'▲':'▼'}`;
+      th.setAttribute('aria-sort',savedWeeksSort.direction==='asc'?'ascending':'descending');
+    }else{
+      th.textContent=`${label} ↕`;
+      th.setAttribute('aria-sort','none');
+    }
+  });
+}
+
+function enableSavedWeeksSorting(){
+  const table=document.getElementById('savedWeeks')?.closest('table');
+  if(!table)return;
+
+  const sortable=[
+    ['periodo','periodo'],
+    ['semana','start'],
+    ['total','total'],
+    ['reporte','report'],
+    ['pago estimado','pay'],
+    ['estado','status']
+  ];
+
+  const headers=[...table.querySelectorAll('thead th')];
+  sortable.forEach(([label,key])=>{
+    const th=headers.find(h=>normalizeHeader(h.textContent)===label);
+    if(!th || th.dataset.sortBound==='1')return;
+
+    th.dataset.sort=key;
+    th.dataset.sortBound='1';
+    th.dataset.label=th.textContent.trim();
+    th.addEventListener('click',()=>{
+      if(savedWeeksSort.key===key){
+        savedWeeksSort.direction=savedWeeksSort.direction==='asc'?'desc':'asc';
+      }else{
+        savedWeeksSort.key=key;
+        savedWeeksSort.direction=key==='start'?'desc':'asc';
+      }
+      renderSavedWeeks();
+    });
+  });
+
+  updateSavedWeeksHeaderIndicators();
+}
+
 function renderSavedWeeks(){
   const body=document.getElementById('savedWeeks');
   if(!savedWeekData.length){
     body.innerHTML='<tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
+    enableSavedWeeksSorting();
+    updateSavedWeeksHeaderIndicators();
     return;
   }
 
-  body.innerHTML=savedWeekData.map(w=>`
+  const orderedWeeks=getSortedSavedWeeks();
+  body.innerHTML=orderedWeeks.map(w=>`
     <tr>
       <td>${w.periodo}</td>
       <td>${formatDateEs(w.start)} – ${formatDateEs(w.end)}</td>
@@ -205,6 +304,8 @@ function renderSavedWeeks(){
   body.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>openWeekView(Number(b.dataset.view))));
   body.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>openEditor(Number(b.dataset.edit))));
   body.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteWeek(Number(b.dataset.delete))));
+  enableSavedWeeksSorting();
+  updateSavedWeeksHeaderIndicators();
 }
 
 function buildWeekMessageText(w){
