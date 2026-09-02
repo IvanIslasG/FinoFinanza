@@ -998,7 +998,20 @@ function parseDelimitedText(text){
 
 function parseFlexibleDate(value){
   if(value==null || value==='')return'';
-  if(value instanceof Date && !isNaN(value))return toInputDate(value);
+
+  if(value instanceof Date && !isNaN(value)){
+    return toInputDate(value);
+  }
+
+  // Fechas seriales nativas de Excel.
+  if(typeof value==='number' && Number.isFinite(value) && value>1000){
+    const excelEpoch=Date.UTC(1899,11,30);
+    const date=new Date(excelEpoch+Math.floor(value)*86400000);
+    if(!isNaN(date)){
+      return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}-${String(date.getUTCDate()).padStart(2,'0')}`;
+    }
+  }
+
   const s=String(value).trim();
 
   function validYMD(year,month,day){
@@ -1012,7 +1025,9 @@ function parseFlexibleDate(value){
   }
 
   let m=s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if(m)return validYMD(Number(m[1]),Number(m[2]),Number(m[3]));
+  if(m){
+    return validYMD(Number(m[1]),Number(m[2]),Number(m[3]));
+  }
 
   m=s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
   if(m){
@@ -1020,17 +1035,16 @@ function parseFlexibleDate(value){
     let year=Number(m[3]);
     if(year<100)year+=year>=70?1900:2000;
 
-    // Si una de las dos primeras partes es > 12, la interpretación es inequívoca.
-    if(a>12 && b<=12) return validYMD(year,b,a); // DD/MM/YY
-    if(b>12 && a<=12) return validYMD(year,a,b); // MM/DD/YY
+    if(a>12 && b<=12)return validYMD(year,b,a);
+    if(b>12 && a<=12)return validYMD(year,a,b);
 
-    // Para fechas ambiguas (p. ej. 01/02/26) preferimos DD/MM,
-    // que es el formato habitual en México.
+    // Para tablas pegadas manualmente seguimos prefiriendo DD/MM.
     return validYMD(year,b,a) || validYMD(year,a,b);
   }
 
   const d=new Date(s);
   if(!isNaN(d))return toInputDate(d);
+
   return '';
 }
 
@@ -1295,7 +1309,7 @@ async function handleExcelFile(event){
     let best=null;
     for(const sheetName of workbook.SheetNames){
       const sheet=workbook.Sheets[sheetName];
-      const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:''});
+      const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:true,defval:''});
       const normalized=rows.filter(row=>Array.isArray(row)&&row.some(cell=>String(cell).trim()));
       if(!normalized.length)continue;
       const header=detectHeaderRow(normalized);
@@ -1328,7 +1342,8 @@ function valueAt(row,field){
 }
 
 function rowsToImportedWeeks(){
-  const dataRows=tableImportState.rows.slice(tableImportState.headerRow+1);
+  const allRows=tableImportState.rows;
+  const firstHeader=tableImportState.headerRow;
 
   if(mappedColumnIndex('date')<0){
     throw new Error('Debes asignar una columna como Fecha.');
@@ -1341,133 +1356,160 @@ function rowsToImportedWeeks(){
     throw new Error('Necesitamos Horas, o bien Hora inicio + Hora fin.');
   }
 
-  const groups=new Map();
+  // Detectar bloques semanales cuando el archivo repite encabezados.
+  const blocks=[];
+  let current=[];
 
-  for(const row of dataRows){
-    const date=parseFlexibleDate(valueAt(row,'date'));
-    if(!date)continue;
+  for(let i=firstHeader+1;i<allRows.length;i++){
+    const row=allRows[i];
 
-    const start=parseFlexibleTime(valueAt(row,'start'));
-    const end=parseFlexibleTime(valueAt(row,'end'));
-
-    let minutes=parseDurationMinutes(valueAt(row,'hours'));
-    if(!minutes && start && end){
-      minutes=minutesBetween(start,end);
+    if(headerScore(row)>=3){
+      if(current.length)blocks.push(current);
+      current=[];
+      continue;
     }
 
-    const activity=String(valueAt(row,'activity')||'').trim();
-
-    // Ignorar pies de tabla / totales sin un registro diario utilizable.
-    if(!minutes && !activity && !start && !end)continue;
-
-    const monday=mondayFromDateString(date);
-    const mondayDate=new Date(monday+'T12:00:00');
-
-    // IMPORTANTE:
-    // Ya no arrastramos Periodo / Reporte / Pago desde semanas anteriores.
-    // Cada semana nace con sus propios valores calculados.
-    if(!groups.has(monday)){
-      const defaultReport=nextMondayFromWeek(monday);
-
-      groups.set(monday,{
-        periodo:String(isoWeekNumber(mondayDate)),
-        start:monday,
-        end:sundayFromMonday(monday),
-        report:defaultReport,
-        pay:secondSaturdayAfter(defaultReport),
-        status:'Borrador',
-        importedAt:new Date().toISOString(),
-        importSource:tableImportState.sourceLabel,
-        entries:Array.from({length:7},(_,i)=>{
-          const d=new Date(monday+'T12:00:00');
-          d.setDate(d.getDate()+i);
-          return {
-            date:toInputDate(d),
-            start:'',
-            end:'',
-            activity:'',
-            minutes:0
-          };
-        })
-      });
-    }
-
-    const week=groups.get(monday);
-
-    // Solo se aplican metadatos explícitos de una fila a SU propia semana.
-    const explicitPeriod=String(valueAt(row,'period')||'').trim();
-    const explicitReport=parseFlexibleDate(valueAt(row,'report'));
-    const explicitPay=parseFlexibleDate(valueAt(row,'pay'));
-
-    if(explicitPeriod){
-      week.periodo=explicitPeriod;
-    }
-
-    if(explicitReport){
-      week.report=explicitReport;
-
-      // Si no viene un pago explícito, recalcularlo desde el reporte de ESTA semana.
-      if(!explicitPay){
-        week.pay=secondSaturdayAfter(explicitReport);
-      }
-    }
-
-    if(explicitPay){
-      week.pay=explicitPay;
-    }
-
-    const dateObj=new Date(date+'T12:00:00');
-    if(isNaN(dateObj))continue;
-
-    const jsDay=dateObj.getDay();
-    const index=jsDay===0?6:jsDay-1;
-
-    if(index<0 || index>6)continue;
-
-    const existing=week.entries[index];
-    if(!existing)continue;
-
-    // Si existen varios registros el mismo día, acumular horas y actividad.
-    if(existing.minutes>0 || existing.activity){
-      existing.minutes+=minutes;
-
-      if(activity){
-        existing.activity=[existing.activity,activity]
-          .filter(Boolean)
-          .join(' / ');
-      }
-
-      if(!existing.start && start){
-        existing.start=start;
-      }
-
-      if(end){
-        existing.end=end;
-      }
-    }else{
-      week.entries[index]={
-        date,
-        start,
-        end,
-        activity,
-        minutes
-      };
+    if(row.some(cell=>String(cell??'').trim()!=='')){
+      current.push(row);
     }
   }
 
-  return Array.from(groups.values())
-    .map(week=>({
-      ...week,
-      total:week.entries.reduce(
-        (sum,row)=>sum+(row.minutes||0),
-        0
-      )
-    }))
-    .filter(
-      week=>
-        week.total>0 ||
-        week.entries.some(row=>row.activity)
+  if(current.length)blocks.push(current);
+
+  // Si no hay encabezados repetidos, tratar todo como una sola tabla continua.
+  if(!blocks.length){
+    blocks.push(allRows.slice(firstHeader+1));
+  }
+
+  const result=[];
+
+  for(const block of blocks){
+    const dailyRows=block.filter(row=>parseFlexibleDate(valueAt(row,'date')));
+    if(!dailyRows.length)continue;
+
+    // El periodo de un bloque debe ser el valor explícito del propio Excel.
+    const explicitPeriodRow=block.find(row=>String(valueAt(row,'period')||'').trim()!=='');
+    const explicitPeriod=explicitPeriodRow
+      ? String(valueAt(explicitPeriodRow,'period')).trim()
+      : '';
+
+    const firstDate=parseFlexibleDate(valueAt(dailyRows[0],'date'));
+    if(!firstDate)continue;
+
+    const monday=mondayFromDateString(firstDate);
+    const mondayDate=new Date(monday+'T12:00:00');
+
+    const explicitReportRow=block.find(row=>parseFlexibleDate(valueAt(row,'report')));
+    const explicitPayRow=block.find(row=>parseFlexibleDate(valueAt(row,'pay')));
+
+    const explicitReport=explicitReportRow
+      ? parseFlexibleDate(valueAt(explicitReportRow,'report'))
+      : '';
+
+    const explicitPay=explicitPayRow
+      ? parseFlexibleDate(valueAt(explicitPayRow,'pay'))
+      : '';
+
+    const defaultReport=nextMondayFromWeek(monday);
+
+    const week={
+      periodo:explicitPeriod || String(isoWeekNumber(mondayDate)),
+      start:monday,
+      end:sundayFromMonday(monday),
+      report:explicitReport || defaultReport,
+      pay:explicitPay || secondSaturdayAfter(explicitReport || defaultReport),
+      status:'Borrador',
+      importedAt:new Date().toISOString(),
+      importSource:tableImportState.sourceLabel,
+      entries:Array.from({length:7},(_,i)=>{
+        const d=new Date(monday+'T12:00:00');
+        d.setDate(d.getDate()+i);
+        return {
+          date:toInputDate(d),
+          start:'',
+          end:'',
+          activity:'',
+          minutes:0
+        };
+      })
+    };
+
+    let daySequence=0;
+
+    for(const row of dailyRows){
+      let date=parseFlexibleDate(valueAt(row,'date'));
+      if(!date)continue;
+
+      const start=parseFlexibleTime(valueAt(row,'start'));
+      const end=parseFlexibleTime(valueAt(row,'end'));
+
+      let minutes=parseDurationMinutes(valueAt(row,'hours'));
+      if(!minutes && start && end){
+        minutes=minutesBetween(start,end);
+      }
+
+      const activity=String(valueAt(row,'activity')||'').trim();
+
+      // Validar que la fecha pertenezca a la semana de su propio bloque.
+      let dateObj=new Date(date+'T12:00:00');
+      let rowMonday=!isNaN(dateObj)
+        ? mondayFromDateString(date)
+        : '';
+
+      // Si una fecha del bloque viene dañada o salta a otra semana/año,
+      // reconstruirla por su posición dentro del bloque.
+      if(rowMonday!==monday && daySequence<7){
+        const repaired=new Date(monday+'T12:00:00');
+        repaired.setDate(repaired.getDate()+daySequence);
+        date=toInputDate(repaired);
+        dateObj=repaired;
+      }
+
+      const jsDay=dateObj.getDay();
+      const index=jsDay===0?6:jsDay-1;
+
+      if(index<0 || index>6){
+        daySequence++;
+        continue;
+      }
+
+      const existing=week.entries[index];
+
+      if(existing.minutes>0 || existing.activity){
+        existing.minutes+=minutes;
+
+        if(activity){
+          existing.activity=[existing.activity,activity]
+            .filter(Boolean)
+            .join(' / ');
+        }
+
+        if(!existing.start && start)existing.start=start;
+        if(end)existing.end=end;
+      }else{
+        week.entries[index]={
+          date,
+          start,
+          end,
+          activity,
+          minutes
+        };
+      }
+
+      daySequence++;
+    }
+
+    week.total=week.entries.reduce(
+      (sum,row)=>sum+(row.minutes||0),
+      0
     );
+
+    if(week.total>0 || week.entries.some(row=>row.activity)){
+      result.push(week);
+    }
+  }
+
+  return result;
 }
 
 async function commitMappedTableImport(){
