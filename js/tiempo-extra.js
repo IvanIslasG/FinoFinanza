@@ -4,6 +4,7 @@ let currentWeek=[];
 let savedWeekData=[];
 let editingId=null;
 let savedWeeksSort={key:'start',direction:'desc'};
+let selectedSavedWeekIds=new Set();
 let db=null;
 
 const DB_NAME='FinanzasFamiliaresDB';
@@ -276,18 +277,148 @@ function enableSavedWeeksSorting(){
   updateSavedWeeksHeaderIndicators();
 }
 
+
+function ensureSavedWeeksBulkUI(){
+  const body=document.getElementById('savedWeeks');
+  const table=body?.closest('table');
+  if(!table)return;
+
+  // Insert selection header if missing.
+  const headerRow=table.querySelector('thead tr');
+  if(headerRow && !headerRow.querySelector('[data-select-header]')){
+    const th=document.createElement('th');
+    th.setAttribute('data-select-header','1');
+    th.style.width='38px';
+    th.innerHTML='<input type="checkbox" id="selectAllSavedWeeks" aria-label="Seleccionar todas las semanas">';
+    headerRow.insertBefore(th,headerRow.firstChild);
+
+    th.querySelector('input').addEventListener('change',e=>{
+      const visibleIds=[...document.querySelectorAll('#savedWeeks input[data-select-week]')]
+        .map(cb=>Number(cb.dataset.selectWeek));
+      if(e.target.checked){
+        visibleIds.forEach(id=>selectedSavedWeekIds.add(id));
+      }else{
+        visibleIds.forEach(id=>selectedSavedWeekIds.delete(id));
+      }
+      document.querySelectorAll('#savedWeeks input[data-select-week]').forEach(cb=>{
+        cb.checked=selectedSavedWeekIds.has(Number(cb.dataset.selectWeek));
+      });
+      updateBulkDeleteUI();
+    });
+  }
+
+  // Add compact bulk toolbar close to the records area.
+  const exportButton=document.getElementById('exportTEJson');
+  const actionArea=exportButton?.parentElement;
+  if(actionArea){
+    actionArea.classList.add('te-compact-tools');
+
+    ['pasteTETableBtn','importTEExcelBtn','importTEJsonBtn','exportTEJson'].forEach(id=>{
+      const btn=document.getElementById(id);
+      if(btn){
+        btn.classList.remove('secondary-btn');
+        btn.classList.add('te-tool-btn');
+      }
+    });
+
+    if(!document.getElementById('deleteSelectedWeeks')){
+      const deleteBtn=document.createElement('button');
+      deleteBtn.id='deleteSelectedWeeks';
+      deleteBtn.type='button';
+      deleteBtn.className='te-tool-btn te-tool-danger';
+      deleteBtn.textContent='Eliminar seleccionados';
+      deleteBtn.disabled=true;
+      deleteBtn.addEventListener('click',deleteSelectedWeeks);
+      actionArea.appendChild(deleteBtn);
+    }
+  }
+
+  if(!document.getElementById('teBulkStyle')){
+    const style=document.createElement('style');
+    style.id='teBulkStyle';
+    style.textContent=`
+      .te-compact-tools{display:flex!important;gap:6px!important;align-items:center!important;flex-wrap:wrap!important}
+      .te-tool-btn{
+        min-height:30px;border:1px solid #e4e7ec;background:#fff;color:#475467;border-radius:8px;
+        padding:5px 9px;font-size:11px;font-weight:700;cursor:pointer;box-shadow:none
+      }
+      .te-tool-btn:hover{background:#f8fafc;border-color:#d0d5dd;color:#344054}
+      .te-tool-btn:disabled{opacity:.45;cursor:not-allowed}
+      .te-tool-danger{color:#b42318;border-color:#fecdca}
+      .te-tool-danger:not(:disabled):hover{background:#fef3f2;border-color:#fda29b}
+      #savedWeeks td:first-child,#savedWeeks th:first-child{text-align:center}
+      #savedWeeks input[type="checkbox"],#selectAllSavedWeeks{width:15px;height:15px;cursor:pointer;accent-color:#155eef}
+    `;
+    document.head.appendChild(style);
+  }
+
+  updateBulkDeleteUI();
+}
+
+function updateBulkDeleteUI(){
+  const button=document.getElementById('deleteSelectedWeeks');
+  const count=selectedSavedWeekIds.size;
+  if(button){
+    button.disabled=count===0;
+    button.textContent=count>0?`Eliminar seleccionados (${count})`:'Eliminar seleccionados';
+  }
+
+  const selectAll=document.getElementById('selectAllSavedWeeks');
+  const rowChecks=[...document.querySelectorAll('#savedWeeks input[data-select-week]')];
+  if(selectAll){
+    const selectedVisible=rowChecks.filter(cb=>selectedSavedWeekIds.has(Number(cb.dataset.selectWeek))).length;
+    selectAll.checked=rowChecks.length>0 && selectedVisible===rowChecks.length;
+    selectAll.indeterminate=selectedVisible>0 && selectedVisible<rowChecks.length;
+  }
+}
+
+async function deleteSelectedWeeks(){
+  const ids=[...selectedSavedWeekIds];
+  if(!ids.length)return;
+
+  if(!confirm(`¿Eliminar ${ids.length} registro(s) de Tiempo Extra?\n\nEsta acción no se puede deshacer.`))return;
+
+  for(const id of ids){
+    try{
+      await delItem(id);
+    }catch(error){
+      console.error('No se pudo eliminar el registro',id,error);
+    }
+  }
+
+  selectedSavedWeekIds.clear();
+  await loadSavedWeeks();
+  updateBulkDeleteUI();
+}
+
+function bindSavedWeekSelectors(){
+  document.querySelectorAll('#savedWeeks input[data-select-week]').forEach(cb=>{
+    const id=Number(cb.dataset.selectWeek);
+    cb.checked=selectedSavedWeekIds.has(id);
+    cb.addEventListener('change',()=>{
+      if(cb.checked)selectedSavedWeekIds.add(id);
+      else selectedSavedWeekIds.delete(id);
+      updateBulkDeleteUI();
+    });
+  });
+  updateBulkDeleteUI();
+}
+
 function renderSavedWeeks(){
   const body=document.getElementById('savedWeeks');
   if(!savedWeekData.length){
-    body.innerHTML='<tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
+    body.innerHTML='<tr><td colspan="8" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr>';
     enableSavedWeeksSorting();
     updateSavedWeeksHeaderIndicators();
+    ensureSavedWeeksBulkUI();
+    bindSavedWeekSelectors();
     return;
   }
 
   const orderedWeeks=getSortedSavedWeeks();
   body.innerHTML=orderedWeeks.map(w=>`
     <tr>
+      <td><input type="checkbox" data-select-week="${w.id}" aria-label="Seleccionar periodo ${w.periodo}"></td>
       <td>${w.periodo}</td>
       <td>${formatDateEs(w.start)} – ${formatDateEs(w.end)}</td>
       <td><strong>${hhmm(w.total||0)}</strong></td>
@@ -306,6 +437,8 @@ function renderSavedWeeks(){
   body.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteWeek(Number(b.dataset.delete))));
   enableSavedWeeksSorting();
   updateSavedWeeksHeaderIndicators();
+  ensureSavedWeeksBulkUI();
+  bindSavedWeekSelectors();
 }
 
 function buildWeekMessageText(w){
@@ -1000,6 +1133,7 @@ async function exportTiempoExtraJSON(){
 }
 
 export async function initTiempoExtra(){
+  setTimeout(ensureSavedWeeksBulkUI,0);
   createImportUI();
   document.getElementById('weekReportDate').addEventListener('change',setExpectedPay);
   document.getElementById('weekStart').addEventListener('change',buildWeek);
