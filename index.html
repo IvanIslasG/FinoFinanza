@@ -97,6 +97,12 @@ main{width:100%;max-width:1480px;margin:auto;padding:30px}
 .export-row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
 .mini-hint{font-size:11px;color:var(--muted)}
 
+
+.income-reader-grid{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(0,1.2fr);gap:22px;align-items:start}
+.income-dropzone{min-height:235px;border:2px dashed #b8c8ef;border-radius:18px;background:#f8faff;display:grid;place-items:center;text-align:center;padding:24px}.income-dropzone.dragover{border-color:var(--accent);background:#eef4ff}.income-drop-icon{width:56px;height:56px;border-radius:16px;background:#eef4ff;color:var(--accent);display:grid;place-items:center;margin:0 auto 12px;font-weight:900}.income-dropzone p{margin:6px 0 16px;color:var(--muted);font-size:12px}
+.income-file{display:none;margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:11px 12px;align-items:center;justify-content:space-between;gap:12px}.income-file.show{display:flex}.income-status{display:none;margin-top:12px;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.4}.income-status.show{display:block}.income-status.info{background:#eef4ff;color:#3538cd}.income-status.ok{background:#ecfdf3;color:#067647}.income-status.warn{background:#fffaeb;color:#b54708}.income-status.error{background:#fef3f2;color:#b42318}
+.income-empty{text-align:center;color:var(--muted);padding:34px 20px;border:1px dashed var(--line);border-radius:16px}.income-empty .big{font-size:30px;margin-bottom:8px}.income-meta-grid{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:12px}.income-meta-grid>div{padding:12px;border-right:1px solid var(--line)}.income-meta-grid>div:last-child{border-right:0}.income-meta-grid span,.income-kpis span{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}.income-meta-grid strong{font-size:13px}
+.income-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}.income-kpis>div{padding:14px;border:1px solid var(--line);border-radius:14px;background:#f8fafc}.income-kpis strong{font-size:20px}.income-kpis .net{background:#f0fdf4}.income-validation{padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid var(--line);font-size:12px;margin-bottom:12px}
 @media(max-width:980px){
   .app{grid-template-columns:1fr}aside{height:auto;position:static;padding:14px}.brand,.side-footer{display:none}
   .nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.home-layout{grid-template-columns:1fr}.week-grid{grid-template-columns:repeat(7,150px)}
@@ -139,7 +145,13 @@ main{width:100%;max-width:1480px;margin:auto;padding:30px}
 </section>
 
 <section class="screen" id="resumen"><div class="topbar"><div><h2>Resumen</h2><p>Análisis detallado.</p></div></div><div class="card"><div class="placeholder"><div class="big">▦</div><h3>Resumen</h3><p>Módulo en construcción.</p></div></div></section>
-<section class="screen" id="ingresos"><div class="topbar"><div><h2>Ingresos</h2><p>Nómina, renta, extras y Diana.</p></div></div><div class="card"><div class="placeholder"><div class="big">↓</div><h3>Ingresos</h3><p>El lector de volantes TELMEX vivirá aquí.</p></div></div></section>
+<section class="screen" id="ingresos">
+  <div class="topbar"><div><h2>Ingresos</h2><p>Registro de TELMEX, renta, extras y Diana.</p></div></div>
+  <section class="card"><div class="card-head"><h3>Lector de volantes TELMEX</h3><span>PDF</span></div><div class="card-body"><div class="income-reader-grid">
+    <div><div class="income-dropzone" id="incomeDropzone"><div><div class="income-drop-icon">PDF</div><strong>Arrastra aquí tu volante</strong><p>o selecciona el archivo desde tu equipo.</p><button class="secondary-btn" id="incomeSelectBtn" type="button">Seleccionar PDF</button><input id="incomeFileInput" type="file" accept="application/pdf,.pdf" hidden></div></div><div class="income-file" id="incomeFileInfo"><div><strong id="incomeFileName">—</strong><div class="mini-hint" id="incomeFileSize">—</div></div><button class="copy-btn" id="incomeRemoveFile" type="button">Quitar</button></div><div class="form-actions"><button class="primary-btn" id="incomeProcessBtn" type="button" disabled>Procesar volante</button><button class="secondary-btn" id="incomeDemoBtn" type="button">Cargar ejemplo P39</button></div><div class="income-status" id="incomeStatus"></div></div>
+    <div><div class="income-empty" id="incomeEmpty"><div class="big">⌁</div><strong>Sin datos procesados</strong><p>Al procesar un volante aparecerán aquí sus datos principales y el desglose.</p></div><div id="incomeResult" style="display:none"><div class="income-meta-grid"><div><span>Fecha de pago</span><strong id="incomePayDate">—</strong></div><div><span>Periodo</span><strong id="incomePeriod">—</strong></div><div><span>Días</span><strong id="incomeDays">—</strong></div><div><span>Salario diario</span><strong id="incomeDailySalary">—</strong></div></div><div class="income-kpis"><div><span>Percepciones</span><strong id="incomePerceptions">$0.00</strong></div><div><span>Deducciones</span><strong id="incomeDeductions">$0.00</strong></div><div class="net"><span>Neto</span><strong id="incomeNet">$0.00</strong></div></div><div class="income-validation" id="incomeValidation">—</div><div class="te-table-wrap"><table class="te-table"><thead><tr><th>Clave</th><th>Descripción</th><th>Tipo</th><th>Días</th><th>Horas</th><th>Importe</th><th>Acumulado</th></tr></thead><tbody id="incomeConceptRows"></tbody></table></div></div></div>
+  </div></div></section>
+</section>
 
 <section class="screen" id="tiempoextra">
   <div class="topbar"><div><h2>Tiempo Extra</h2></div></div>
@@ -166,7 +178,7 @@ main{width:100%;max-width:1480px;margin:auto;padding:30px}
     <div class="card-body">
       <div class="export-row">
         <div><strong>Registro de Tiempo Extra</strong><div class="mini-hint">Puedes respaldar todo el historial en un archivo JSON.</div></div>
-        <button class="secondary-btn" id="exportTEJson" type="button">Exportar JSON</button>
+        <div class="copy-actions" style="margin-top:0"><button class="secondary-btn" id="importTEJsonBtn" type="button">Importar JSON</button><input id="importTEJsonInput" type="file" accept="application/json,.json" hidden><button class="secondary-btn" id="exportTEJson" type="button">Exportar JSON</button></div>
       </div>
       <div class="te-table-wrap"><table class="te-table"><thead><tr><th>Periodo</th><th>Semana</th><th>Total</th><th>Reporte</th><th>Pago estimado</th><th>Estado</th><th>Acciones</th></tr></thead><tbody id="savedWeeks"><tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">Aún no hay semanas guardadas.</td></tr></tbody></table></div>
 
