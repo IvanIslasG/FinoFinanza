@@ -398,6 +398,13 @@ function ensureReconciliationUI(){
       .te-recon-form{display:grid;grid-template-columns:180px minmax(220px,1fr) auto;gap:10px;align-items:end;padding:14px 16px}
       .te-recon-form .field input{height:36px}
       .te-recon-form .te-tool-btn{height:34px;margin-bottom:1px}
+      .te-paid-input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}
+      .te-paid-input-row input{min-width:0}
+      .te-paid-all-btn{
+        height:36px;border:1px solid #abefc6;background:#ecfdf3;color:#067647;border-radius:9px;
+        padding:0 10px;font-size:11px;font-weight:800;cursor:pointer;white-space:nowrap
+      }
+      .te-paid-all-btn:hover{background:#dcfae6;border-color:#75e0a7}
       .te-recon-future{padding:0 16px 14px;color:#98a2b3;font-size:10px;line-height:1.4}
       @media(max-width:760px){.te-recon-grid{grid-template-columns:repeat(2,1fr)}.te-recon-form{grid-template-columns:1fr}}
     `;
@@ -422,7 +429,13 @@ function renderReconciliation(week){
       <div><span>Estado</span><strong>${status}</strong></div>
     </div>
     <div class="te-recon-form">
-      <div class="field"><label>Horas pagadas</label><input id="reconPaidHours" type="text" inputmode="decimal" value="${hhmm(paid)}" placeholder="Ej. 09:30"><div class="mini-hint">Acepta HH:MM o decimal. Ejemplo: 9.5 = 09:30.</div></div>
+      <div class="field">
+        <label>Horas pagadas</label>
+        <div class="te-paid-input-row">
+          <input id="reconPaidHours" type="text" inputmode="decimal" value="${hhmm(paid)}" placeholder="Ej. 09:30">
+          <button class="te-paid-all-btn" id="markAllPaidBtn" type="button" title="Marcar todas las horas como pagadas">Pagado</button>
+        </div>
+      </div>
       <div class="field"><label>Nota</label><input id="reconNote" type="text" value="${String(week.paymentNote||'').replace(/"/g,'&quot;')}" placeholder="Ej. faltaron 3 horas"></div>
       <button class="te-tool-btn" id="saveReconciliationBtn" type="button">Guardar conciliación</button>
     </div>
@@ -434,6 +447,13 @@ function renderReconciliation(week){
   });
   paidInput?.addEventListener('click',()=>{
     paidInput.select();
+  });
+
+  document.getElementById('markAllPaidBtn')?.addEventListener('click',async()=>{
+    if(paidInput){
+      paidInput.value=hhmm(week.total||0);
+    }
+    await saveManualReconciliation(week.id);
   });
 
   document.getElementById('saveReconciliationBtn')?.addEventListener('click',()=>saveManualReconciliation(week.id));
