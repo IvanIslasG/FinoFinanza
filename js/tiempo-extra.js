@@ -149,9 +149,15 @@ function buildWeek(){
       <input type="time" data-i="${i}" data-f="end">
       <button type="button" class="te-add-slot" data-add-slot="${i}">＋ Segundo horario</button>
       <div class="te-second-slot" id="second-slot-${i}" style="display:none">
-        <input type="time" data-i="${i}" data-f="start2">
-        <input type="time" data-i="${i}" data-f="end2">
-        <button type="button" class="te-remove-slot" data-remove-slot="${i}" title="Quitar segundo horario">×</button>
+        <div class="te-second-field">
+          <small>Inicio 2</small>
+          <input type="time" data-i="${i}" data-f="start2">
+        </div>
+        <div class="te-second-field">
+          <small>Fin 2</small>
+          <input type="time" data-i="${i}" data-f="end2">
+        </div>
+        <button type="button" class="te-remove-slot" data-remove-slot="${i}" title="Quitar segundo horario" aria-label="Quitar segundo horario">×</button>
       </div>
       <textarea data-i="${i}" data-f="activity" placeholder="Actividad"></textarea>
       <div class="hours" id="hours-${i}">00:00</div>`;
@@ -1705,12 +1711,40 @@ function ensureSecondIntervalStyles(){
   style.textContent=`
     .te-add-slot,.te-add-slot-editor{border:0;background:transparent;color:#667085;font-size:10px;font-weight:700;padding:5px 2px;cursor:pointer;text-align:left}
     .te-add-slot:hover,.te-add-slot-editor:hover{color:#155eef}
-    .te-second-slot{grid-template-columns:1fr 1fr auto;gap:5px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e4e7ec}
-    .te-second-slot input{margin-top:0!important}
-    .te-remove-slot{width:25px;height:25px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;color:#98a2b3;cursor:pointer;padding:0}
+    .te-second-slot{
+      grid-template-columns:1fr;
+      gap:5px;
+      align-items:stretch;
+      margin-top:6px;
+      padding-top:7px;
+      border-top:1px dashed #e4e7ec;
+      width:100%;
+      min-width:0
+    }
+    .te-second-slot input{
+      margin-top:0!important;
+      width:100%!important;
+      min-width:0!important
+    }
+    .te-second-field{display:grid;gap:3px;min-width:0}
+    .te-second-field small{font-size:9px;color:#98a2b3;font-weight:700;padding-left:1px}
+    .te-second-slot .te-remove-slot{
+      justify-self:end;
+      margin-top:1px
+    }
+    .te-remove-slot{
+      width:25px;height:25px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;
+      color:#98a2b3;cursor:pointer;padding:0
+    }
     .te-remove-slot:hover{background:#fef3f2;color:#b42318;border-color:#fecdca}
-    .te-editor-second{grid-column:2/-1}
-    .te-editor-slot{grid-template-columns:1fr 1fr auto;gap:8px;align-items:center}
+    .te-editor-second{grid-column:2/-1;min-width:0}
+    .te-editor-slot{
+      grid-template-columns:1fr 1fr auto;
+      gap:8px;
+      align-items:center;
+      min-width:0
+    }
+    .te-editor-slot input{min-width:0;width:100%}
   `;
   document.head.appendChild(style);
 }
