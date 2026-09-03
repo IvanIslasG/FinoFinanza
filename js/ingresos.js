@@ -280,14 +280,15 @@ function renderIncomeShell(){
                   </datalist>
                 </div>
                 <div class="income-field">
-                  <label>Tipo</label>
+                  <label>Categoría</label>
                   <select id="manualType">
-                    <option value="Ordinario">Ordinario</option>
-                    <option value="Extraordinario">Extraordinario</option>
+                    <option value="Sueldo / Nómina">Sueldo / Nómina</option>
                     <option value="Renta">Renta</option>
+                    <option value="Trabajo extra">Trabajo extra</option>
                     <option value="Venta">Venta</option>
                     <option value="Devolución">Devolución</option>
                     <option value="Regalo">Regalo</option>
+                    <option value="Premio / Bono">Premio / Bono</option>
                     <option value="Otro">Otro</option>
                   </select>
                 </div>
@@ -420,7 +421,7 @@ function renderIncomeShell(){
             </div>
             <div class="income-table-wrap">
               <table class="income-table">
-                <thead><tr><th>Fecha</th><th>Persona</th><th>Fuente</th><th>Concepto / periodo</th><th>Tipo</th><th>Neto</th><th></th></tr></thead>
+                <thead><tr><th>Fecha</th><th>Persona</th><th>Fuente</th><th>Concepto / periodo</th><th>Categoría</th><th>Neto</th><th></th></tr></thead>
                 <tbody id="incomeHistoryRows"></tbody>
               </table>
             </div>
@@ -454,7 +455,7 @@ function resetManualForm(){
   form?.reset();
   document.getElementById('manualPerson').value='Ivan';
   document.getElementById('manualDate').value=new Date().toISOString().slice(0,10);
-  document.getElementById('manualType').value='Ordinario';
+  document.getElementById('manualType').value='Otro';
   document.getElementById('manualIncomeTitle').textContent='Registrar ingreso';
   document.getElementById('manualSaveBtn').textContent='Guardar ingreso';
   document.getElementById('manualCancelEdit').style.display='none';
@@ -713,7 +714,7 @@ async function showIncomeDetail(id){
         <div class="income-field"><label>Fecha</label><strong>${localDate(item.paymentDate)}</strong></div>
         <div class="income-field"><label>Persona</label><strong>${esc(normalizedPerson(item.person))}</strong></div>
         <div class="income-field"><label>Fuente</label><strong>${esc(item.source)}</strong></div>
-        <div class="income-field"><label>Tipo</label><strong>${esc(item.incomeType)}</strong></div>
+        <div class="income-field"><label>Categoría</label><strong>${esc(item.incomeType)}</strong></div>
         <div class="income-field full"><label>Concepto</label><strong>${esc(item.concept)}</strong></div>
         <div class="income-field"><label>Monto</label><strong style="font-size:18px">${money(item.amount)}</strong></div>
         <div class="income-field full"><label>Nota</label><div>${esc(item.note||'—')}</div></div>
