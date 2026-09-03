@@ -243,7 +243,9 @@ function pendingMinutesForWeek(week){
 function paymentStatusForWeek(week){
   const total=Math.max(0,Number(week.total||0));
   const paid=paidMinutesForWeek(week);
-  if(total<=0)return week.status||'Borrador';
+  if(total<=0){
+    return week.status==='Vacaciones' ? 'Vacaciones' : 'Sin Tiempo Extra';
+  }
   if(paid<=0)return 'Pendiente de pago';
   if(paid<total)return 'Pago parcial';
   if(paid===total)return 'Pagado completo';
@@ -256,6 +258,8 @@ function paymentStatusClass(status){
   if(normalized==='pagado completo')return 'te-status-green';
   if(normalized==='pago parcial')return 'te-status-amber';
   if(normalized==='pendiente de pago')return 'te-status-amber';
+  if(normalized==='sin tiempo extra')return 'te-status-neutral';
+  if(normalized==='vacaciones')return 'te-status-blue';
   if(normalized==='revisar diferencia')return 'te-status-red';
   if(normalized==='con diferencia')return 'te-status-red';
 
@@ -753,6 +757,8 @@ function ensureSavedWeeksBulkUI(){
       .te-status-red .te-status-dot{background:#f04438}
       .te-status-neutral{background:#f2f4f7!important;color:#475467!important;border-color:#e4e7ec!important}
       .te-status-neutral .te-status-dot{background:#98a2b3}
+      .te-status-blue{background:#eff8ff!important;color:#175cd3!important;border-color:#b2ddff!important}
+      .te-status-blue .te-status-dot{background:#2e90fa}
       .te-icon-action{
         width:28px;height:28px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;
         display:inline-grid;place-items:center;padding:0;font-size:13px;cursor:pointer;line-height:1
@@ -980,14 +986,35 @@ function openWeekView(id){
   panel.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
+
+function ensureZeroHourStatusOptions(){
+  const select=document.getElementById('editStatus');
+  if(!select)return;
+
+  const options=[
+    ['Sin Tiempo Extra','Sin Tiempo Extra'],
+    ['Vacaciones','Vacaciones']
+  ];
+
+  options.forEach(([value,label])=>{
+    if(![...select.options].some(option=>option.value===value)){
+      const option=document.createElement('option');
+      option.value=value;
+      option.textContent=label;
+      select.appendChild(option);
+    }
+  });
+}
+
 function openEditor(id){
   const w=savedWeekData.find(x=>x.id===id);
   if(!w)return;
   editingId=id;
+  ensureZeroHourStatusOptions();
   document.getElementById('editPeriod').value=w.periodo||'';
   document.getElementById('editReport').value=w.report||'';
   document.getElementById('editPay').value=w.pay||'';
-  document.getElementById('editStatus').value=w.status||'Borrador';
+  document.getElementById('editStatus').value=paymentStatusForWeek(w);
 
   const box=document.getElementById('editorDays');
   box.innerHTML='';
@@ -1057,7 +1084,9 @@ async function saveEdit(){
     periodo:document.getElementById('editPeriod').value,
     report:document.getElementById('editReport').value,
     pay:document.getElementById('editPay').value,
-    status:document.getElementById('editStatus').value,
+    status:entries.reduce((s,r)=>s+r.minutes,0)<=0
+      ? document.getElementById('editStatus').value
+      : w.status,
     entries,
     total:entries.reduce((s,r)=>s+r.minutes,0),
     updatedAt:new Date().toISOString()
@@ -1770,6 +1799,7 @@ function ensureSecondIntervalStyles(){
 }
 
 export async function initTiempoExtra(){
+  ensureZeroHourStatusOptions();
   ensureSecondIntervalStyles();
   ensureReconciliationUI();
   setTimeout(ensureSavedWeeksCollapsible,0);
