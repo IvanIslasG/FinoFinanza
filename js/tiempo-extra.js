@@ -70,6 +70,18 @@ function minutesBetween(start,end){
   if(b<a)b+=1440;
   return Math.max(0,b-a);
 }
+
+function totalEntryMinutes(entry){
+  return minutesBetween(entry.start,entry.end) +
+    minutesBetween(entry.start2,entry.end2);
+}
+
+function entryScheduleText(entry){
+  const parts=[];
+  if(entry.start || entry.end)parts.push(`${entry.start||'—'}–${entry.end||'—'}`);
+  if(entry.start2 || entry.end2)parts.push(`${entry.start2||'—'}–${entry.end2||'—'}`);
+  return parts.join(' / ');
+}
 function hhmm(mins){
   return `${String(Math.floor(mins/60)).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}`;
 }
@@ -126,7 +138,7 @@ function buildWeek(){
     const d=new Date(monday);
     d.setDate(monday.getDate()+i);
     const date=toInputDate(d);
-    currentWeek.push({date,start:i<5?'16:00':'',end:'',activity:'',minutes:0});
+    currentWeek.push({date,start:i<5?'16:00':'',end:'',start2:'',end2:'',activity:'',minutes:0});
 
     const card=document.createElement('div');
     card.className='day-card';
@@ -135,6 +147,12 @@ function buildWeek(){
       <div class="date">${formatDateEs(date)}</div>
       <input type="time" data-i="${i}" data-f="start" value="${i<5?'16:00':''}">
       <input type="time" data-i="${i}" data-f="end">
+      <button type="button" class="te-add-slot" data-add-slot="${i}">＋ Segundo horario</button>
+      <div class="te-second-slot" id="second-slot-${i}" style="display:none">
+        <input type="time" data-i="${i}" data-f="start2">
+        <input type="time" data-i="${i}" data-f="end2">
+        <button type="button" class="te-remove-slot" data-remove-slot="${i}" title="Quitar segundo horario">×</button>
+      </div>
       <textarea data-i="${i}" data-f="activity" placeholder="Actividad"></textarea>
       <div class="hours" id="hours-${i}">00:00</div>`;
     grid.appendChild(card);
@@ -145,11 +163,36 @@ function buildWeek(){
       const i=Number(e.target.dataset.i);
       const field=e.target.dataset.f;
       currentWeek[i][field]=e.target.value;
-      currentWeek[i].minutes=minutesBetween(currentWeek[i].start,currentWeek[i].end);
+      currentWeek[i].minutes=totalEntryMinutes(currentWeek[i]);
       document.getElementById('hours-'+i).textContent=hhmm(currentWeek[i].minutes);
       updateWeekTotal();
     });
   });
+
+  grid.querySelectorAll('[data-add-slot]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const i=Number(btn.dataset.addSlot);
+      document.getElementById('second-slot-'+i).style.display='grid';
+      btn.style.display='none';
+    });
+  });
+
+  grid.querySelectorAll('[data-remove-slot]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const i=Number(btn.dataset.removeSlot);
+      currentWeek[i].start2='';
+      currentWeek[i].end2='';
+      currentWeek[i].minutes=totalEntryMinutes(currentWeek[i]);
+      const slot=document.getElementById('second-slot-'+i);
+      slot.querySelectorAll('input').forEach(input=>input.value='');
+      slot.style.display='none';
+      const add=grid.querySelector(`[data-add-slot="${i}"]`);
+      if(add)add.style.display='inline-flex';
+      document.getElementById('hours-'+i).textContent=hhmm(currentWeek[i].minutes);
+      updateWeekTotal();
+    });
+  });
+
   updateWeekTotal();
 }
 function updateWeekTotal(){
@@ -158,7 +201,7 @@ function updateWeekTotal(){
 }
 
 async function saveCurrentWeek(){
-  if(!currentWeek.some(r=>r.minutes>0||(r.activity||'').trim())){
+  if(!currentWeek.some(r=>r.minutes>0||(r.activity||'').trim()||r.start2||r.end2)){
     alert('No hay tiempo extra capturado.');
     return;
   }
@@ -842,7 +885,7 @@ function buildWeekMessageText(w){
   ];
   (w.entries||[]).forEach((r,i)=>{
     if((r.minutes||0)>0||(r.activity||'').trim()){
-      lines.push(`${dayNames[i]} ${formatDateEs(r.date)} | ${r.start||'—'}-${r.end||'—'} | ${hhmm(r.minutes||minutesBetween(r.start,r.end))} h | ${r.activity||''}`);
+      lines.push(`${dayNames[i]} ${formatDateEs(r.date)} | ${entryScheduleText(r)||'—'} | ${hhmm(r.minutes||totalEntryMinutes(r))} h | ${r.activity||''}`);
     }
   });
   lines.push('',`TOTAL: ${hhmm(w.total||0)} h`);
@@ -856,7 +899,7 @@ function buildExcelTSV(w){
         .split(String.fromCharCode(9)).join(' ')
         .split(String.fromCharCode(10)).join(' ')
         .split(String.fromCharCode(13)).join(' ');
-      rows.push([dayNames[i],formatDateEs(r.date),r.start||'',r.end||'',hhmm(r.minutes||minutesBetween(r.start,r.end)),activity]);
+      rows.push([dayNames[i],formatDateEs(r.date),r.start||'',r.end||'',hhmm(r.minutes||totalEntryMinutes(r)),activity+(r.start2||r.end2?` [2º horario: ${r.start2||'—'}-${r.end2||'—'}]`:'')]);
     }
   });
   rows.push(['TOTAL','','','',hhmm(w.total||0),'']);
@@ -897,7 +940,7 @@ function openWeekView(id){
   (w.entries||[]).forEach((r,i)=>{
     if((r.minutes||0)>0||(r.activity||'').trim()){
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td><strong>${dayNames[i]}</strong></td><td>${formatDateEs(r.date)}</td><td>${r.start||'—'}</td><td>${r.end||'—'}</td><td><strong>${hhmm(r.minutes||minutesBetween(r.start,r.end))}</strong></td><td>${r.activity||''}</td>`;
+      tr.innerHTML=`<td><strong>${dayNames[i]}</strong></td><td>${formatDateEs(r.date)}</td><td>${r.start||'—'}${r.start2?`<br><small>2º: ${r.start2}</small>`:''}</td><td>${r.end||'—'}${r.end2?`<br><small>2º: ${r.end2}</small>`:''}</td><td><strong>${hhmm(r.minutes||totalEntryMinutes(r))}</strong></td><td>${r.activity||''}</td>`;
       body.appendChild(tr);
     }
   });
@@ -929,8 +972,35 @@ function openEditor(id){
       <div class="ed-label"><strong>${dayNames[i]}</strong><br><small>${formatDateEs(r.date)}</small></div>
       <input type="time" data-ei="${i}" data-ef="start" value="${r.start||''}">
       <input type="time" data-ei="${i}" data-ef="end" value="${r.end||''}">
-      <input type="text" data-ei="${i}" data-ef="activity" value="${(r.activity||'').replace(/"/g,'&quot;')}" placeholder="Actividad">`;
+      <input type="text" data-ei="${i}" data-ef="activity" value="${(r.activity||'').replace(/"/g,'&quot;')}" placeholder="Actividad">
+      <div class="te-editor-second">
+        <button type="button" class="te-add-slot-editor" data-edit-add-slot="${i}" ${r.start2||r.end2?'style="display:none"':''}>＋ Segundo horario</button>
+        <div class="te-editor-slot" data-edit-slot="${i}" ${r.start2||r.end2?'':'style="display:none"'}>
+          <input type="time" data-ei="${i}" data-ef="start2" value="${r.start2||''}">
+          <input type="time" data-ei="${i}" data-ef="end2" value="${r.end2||''}">
+          <button type="button" class="te-remove-slot" data-edit-remove-slot="${i}" title="Quitar segundo horario">×</button>
+        </div>
+      </div>`;
     box.appendChild(row);
+  });
+
+  box.querySelectorAll('[data-edit-add-slot]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const i=Number(btn.dataset.editAddSlot);
+      box.querySelector(`[data-edit-slot="${i}"]`).style.display='grid';
+      btn.style.display='none';
+    });
+  });
+
+  box.querySelectorAll('[data-edit-remove-slot]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const i=Number(btn.dataset.editRemoveSlot);
+      const slot=box.querySelector(`[data-edit-slot="${i}"]`);
+      slot.querySelectorAll('input').forEach(input=>input.value='');
+      slot.style.display='none';
+      const add=box.querySelector(`[data-edit-add-slot="${i}"]`);
+      if(add)add.style.display='inline-flex';
+    });
   });
 
   document.getElementById('weekEditor').classList.add('show');
@@ -954,7 +1024,7 @@ async function saveEdit(){
   document.querySelectorAll('#editorDays [data-ei]').forEach(el=>{
     entries[Number(el.dataset.ei)][el.dataset.ef]=el.value;
   });
-  entries.forEach(r=>{ if(r.start && r.end) r.minutes=minutesBetween(r.start,r.end); });
+  entries.forEach(r=>{ r.minutes=totalEntryMinutes(r); });
 
   await putItem({
     ...w,
@@ -1627,7 +1697,26 @@ async function exportTiempoExtraJSON(){
   URL.revokeObjectURL(url);
 }
 
+
+function ensureSecondIntervalStyles(){
+  if(document.getElementById('teSecondIntervalStyle'))return;
+  const style=document.createElement('style');
+  style.id='teSecondIntervalStyle';
+  style.textContent=`
+    .te-add-slot,.te-add-slot-editor{border:0;background:transparent;color:#667085;font-size:10px;font-weight:700;padding:5px 2px;cursor:pointer;text-align:left}
+    .te-add-slot:hover,.te-add-slot-editor:hover{color:#155eef}
+    .te-second-slot{grid-template-columns:1fr 1fr auto;gap:5px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e4e7ec}
+    .te-second-slot input{margin-top:0!important}
+    .te-remove-slot{width:25px;height:25px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;color:#98a2b3;cursor:pointer;padding:0}
+    .te-remove-slot:hover{background:#fef3f2;color:#b42318;border-color:#fecdca}
+    .te-editor-second{grid-column:2/-1}
+    .te-editor-slot{grid-template-columns:1fr 1fr auto;gap:8px;align-items:center}
+  `;
+  document.head.appendChild(style);
+}
+
 export async function initTiempoExtra(){
+  ensureSecondIntervalStyles();
   ensureReconciliationUI();
   setTimeout(ensureSavedWeeksCollapsible,0);
   setTimeout(ensurePaymentColumns,0);
