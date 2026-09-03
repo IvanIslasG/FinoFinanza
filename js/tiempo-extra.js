@@ -1014,7 +1014,29 @@ function openEditor(id){
   document.getElementById('editPeriod').value=w.periodo||'';
   document.getElementById('editReport').value=w.report||'';
   document.getElementById('editPay').value=w.pay||'';
-  document.getElementById('editStatus').value=paymentStatusForWeek(w);
+  const editStatusSelect=document.getElementById('editStatus');
+  const derivedStatus=paymentStatusForWeek(w);
+
+  if(Number(w.total||0)<=0){
+    editStatusSelect.disabled=false;
+    editStatusSelect.title='Selecciona si fue una semana sin tiempo extra o de vacaciones';
+
+    [...editStatusSelect.options].forEach(option=>{
+      option.disabled=!['Sin Tiempo Extra','Vacaciones'].includes(option.value);
+    });
+
+    editStatusSelect.value=
+      w.status==='Vacaciones'
+        ? 'Vacaciones'
+        : 'Sin Tiempo Extra';
+  }else{
+    [...editStatusSelect.options].forEach(option=>option.disabled=false);
+
+    // En semanas con horas el estado depende de la conciliación de pago.
+    editStatusSelect.value=derivedStatus;
+    editStatusSelect.disabled=true;
+    editStatusSelect.title='Este estado se calcula automáticamente según las horas pagadas';
+  }
 
   const box=document.getElementById('editorDays');
   box.innerHTML='';
@@ -1079,18 +1101,31 @@ async function saveEdit(){
   });
   entries.forEach(r=>{ r.minutes=totalEntryMinutes(r); });
 
-  await putItem({
+  const editedTotal=entries.reduce((s,r)=>s+r.minutes,0);
+  const selectedStatus=document.getElementById('editStatus').value;
+
+  const updatedWeek={
     ...w,
     periodo:document.getElementById('editPeriod').value,
     report:document.getElementById('editReport').value,
     pay:document.getElementById('editPay').value,
-    status:entries.reduce((s,r)=>s+r.minutes,0)<=0
-      ? document.getElementById('editStatus').value
-      : w.status,
     entries,
-    total:entries.reduce((s,r)=>s+r.minutes,0),
+    total:editedTotal,
     updatedAt:new Date().toISOString()
-  });
+  };
+
+  if(editedTotal<=0){
+    updatedWeek.status=
+      selectedStatus==='Vacaciones'
+        ? 'Vacaciones'
+        : 'Sin Tiempo Extra';
+  }else{
+    // Para semanas con horas, conservar la conciliación y dejar que
+    // paymentStatusForWeek determine el estado mostrado.
+    updatedWeek.status=w.status||'';
+  }
+
+  await putItem(updatedWeek);
 
   await loadSavedWeeks();
   document.getElementById('weekEditor').classList.remove('show');
@@ -1798,7 +1833,24 @@ function ensureSecondIntervalStyles(){
   document.head.appendChild(style);
 }
 
+
+function ensureEditorStatusStyles(){
+  if(document.getElementById('teEditorStatusStyle'))return;
+  const style=document.createElement('style');
+  style.id='teEditorStatusStyle';
+  style.textContent=`
+    #editStatus:disabled{
+      background:#f8fafc;
+      color:#667085;
+      cursor:not-allowed;
+      opacity:1
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export async function initTiempoExtra(){
+  ensureEditorStatusStyles();
   ensureZeroHourStatusOptions();
   ensureSecondIntervalStyles();
   ensureReconciliationUI();
