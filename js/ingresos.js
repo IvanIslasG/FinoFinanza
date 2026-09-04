@@ -10,6 +10,14 @@ let currentPayslipQueueIndex=null;
 let editingIncomeId=null;
 let incomeView='manual';
 
+let pdfJsReadyPromise=null;
+let tesseractReadyPromise=null;
+let telmexOcrWorker=null;
+
+const PDFJS_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+const PDFJS_WORKER_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const TESSERACT_CDN='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+
 const P39_DEMO={
   person:'Ivan',
   source:'TELMEX',
@@ -183,6 +191,11 @@ function injectIncomeStyles(){
     #ingresos .income-batch-status.valid{background:#ecfdf3;color:#067647;border-color:#abefc6}
     #ingresos .income-batch-status.review{background:#fffaeb;color:#b54708;border-color:#fedf89}
     #ingresos .income-batch-status.error{background:#fef3f2;color:#b42318;border-color:#fecdca}
+    #ingresos .income-ocr-details{margin-top:9px;border:1px solid var(--line);border-radius:9px;background:#f8fafc}
+    #ingresos .income-ocr-details summary{cursor:pointer;padding:8px 10px;font-size:10px;font-weight:800;color:#475467}
+    #ingresos .income-ocr-text{margin:0;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font:10px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:#475467;border-top:1px solid var(--line)}
+    #ingresos .income-ocr-source{font-size:9px;color:#667085;margin-top:5px}
+    
     #ingresos .income-preview-empty{border:1px dashed var(--line);border-radius:12px;padding:30px 16px;text-align:center;color:var(--muted);font-size:12px}
     #ingresos .income-preview{display:none}
     #ingresos .income-preview.show{display:block}
@@ -374,7 +387,7 @@ function renderIncomeShell(){
                   <button class="income-btn" id="incomeDemoP39" type="button">Ejemplo P39</button>
                 </div>
                 <div class="income-toolbar-note">
-                  TELMEX tendrá lectura automática mediante OCR + reglas. Yorsky queda preparado para incorporar su perfil cuando tengamos un volante real.
+                  TELMEX se lee localmente en tu navegador con PDF.js + OCR + reglas. La primera carga puede tardar mientras se descarga el motor OCR. Yorsky queda preparado para incorporar su perfil cuando tengamos un volante real.
                 </div>
               </div>
 
@@ -411,6 +424,11 @@ function renderIncomeShell(){
                     <div class="income-kpi net"><span>Neto</span><strong id="previewNet">$0.00</strong></div>
                   </div>
                   <div class="income-validation" id="previewValidation">—</div>
+                  <div class="income-ocr-source" id="previewOcrSource"></div>
+                  <details class="income-ocr-details" id="previewOcrDetails" style="display:none">
+                    <summary>Ver texto detectado</summary>
+                    <pre class="income-ocr-text" id="previewOcrText"></pre>
+                  </details>
                   <div class="income-table-wrap" style="max-height:300px">
                     <table class="income-table">
                       <thead><tr><th>Clave</th><th>Concepto</th><th>Tipo</th><th>Horas</th><th>Importe</th></tr></thead>
@@ -564,9 +582,13 @@ function clearPdfFile(){
 }
 
 function validationState(d){
-  const calc=Number(d.perceptions||0)-Number(d.deductions||0);
+  const p=Number(d.perceptions||0);
+  const de=Number(d.deductions||0);
+  const n=Number(d.net||0);
+  const calc=p-de;
   if(!d.paymentDate||!d.period)return 'review';
-  return Math.abs(calc-Number(d.net||0))<0.02?'valid':'review';
+  if(!(p>0)||!(n>=0))return 'review';
+  return Math.abs(calc-n)<0.02?'valid':'review';
 }
 
 function renderBatchQueue(){
@@ -587,7 +609,13 @@ function renderBatchQueue(){
       <td>${d.paymentDate?localDate(d.paymentDate):'—'}</td>
       <td>${esc(d.period||'—')}</td>
       <td>${item.data?money(d.net):'—'}</td>
-      <td><span class="income-batch-status ${item.status}">${labels[item.status]||item.status}</span></td>
+      <td>
+        <span class="income-batch-status ${item.status}">${
+          item.status==='processing' && Number.isFinite(item.progress)
+            ? `OCR ${Math.round(item.progress)}%`
+            : (labels[item.status]||item.status)
+        }</span>
+      </td>
       <td><button class="income-icon-btn" type="button" data-open-batch="${index}" title="Revisar">👁</button></td>
     </tr>`;
   }).join('');
@@ -604,22 +632,333 @@ function openBatchPreview(index){
   renderPayslipPreview(item.data);
 }
 
-async function processOnePayslip(file,person,profile){
+
+function loadExternalScript(src,globalName){
+  return new Promise((resolve,reject)=>{
+    if(globalName && window[globalName]){resolve(window[globalName]);return;}
+    const existing=[...document.scripts].find(s=>s.src===src);
+    if(existing){
+      const wait=()=>{
+        if(!globalName || window[globalName])resolve(globalName?window[globalName]:true);
+        else setTimeout(wait,60);
+      };
+      wait();
+      return;
+    }
+    const script=document.createElement('script');
+    script.src=src;
+    script.async=true;
+    script.crossOrigin='anonymous';
+    script.onload=()=>resolve(globalName?window[globalName]:true);
+    script.onerror=()=>reject(new Error(`No se pudo cargar ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function ensurePdfJs(){
+  if(window.pdfjsLib)return window.pdfjsLib;
+  if(!pdfJsReadyPromise){
+    pdfJsReadyPromise=loadExternalScript(PDFJS_CDN,'pdfjsLib').then(pdfjs=>{
+      pdfjs.GlobalWorkerOptions.workerSrc=PDFJS_WORKER_CDN;
+      return pdfjs;
+    });
+  }
+  return pdfJsReadyPromise;
+}
+
+async function ensureTesseract(){
+  if(window.Tesseract)return window.Tesseract;
+  if(!tesseractReadyPromise){
+    tesseractReadyPromise=loadExternalScript(TESSERACT_CDN,'Tesseract');
+  }
+  return tesseractReadyPromise;
+}
+
+function normalizeOcrText(text=''){
+  return String(text)
+    .replace(/\r/g,'')
+    .replace(/[ \t]+/g,' ')
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
+    .trim();
+}
+
+function parseTelmexMoney(raw){
+  if(raw===null||raw===undefined)return null;
+  let s=String(raw).trim()
+    .replace(/\s/g,'')
+    .replace(/\$/g,'')
+    .replace(/[Oo](?=\d)/g,'0')
+    .replace(/(?<=\d)[Oo]/g,'0');
+  if(!s)return null;
+  let negative=false;
+  if(/^\-/.test(s)){negative=true;s=s.slice(1);}
+  s=s.replace(/,/g,'');
+  const n=Number(s);
+  return Number.isFinite(n)?(negative?-n:n):null;
+}
+
+function moneyTokens(line=''){
+  const matches=String(line).match(/-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})|-?\$?\d+\.\d{2}/g)||[];
+  return matches.map(parseTelmexMoney).filter(Number.isFinite);
+}
+
+function toIsoTelmexDate(raw){
+  const m=String(raw||'').match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2})/);
+  if(!m)return '';
+  const d=String(Number(m[1])).padStart(2,'0');
+  const mo=String(Number(m[2])).padStart(2,'0');
+  return `${m[3]}-${mo}-${d}`;
+}
+
+function findTelmexDate(text){
+  const patterns=[
+    /Fecha\s+de\s+pago[\s\S]{0,100}?(\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2})/i,
+    /\b(\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2})\b/
+  ];
+  for(const p of patterns){
+    const m=text.match(p);
+    if(m)return toIsoTelmexDate(m[1]);
+  }
+  return '';
+}
+
+function findTelmexPeriod(text,fileName=''){
+  const m=text.match(/(?:Sindicalizado|Periodo|Per[ií]odo)[\s\S]{0,100}?\b(\d{1,2})\s*\/\s*(20\d{2})\b/i)
+    || text.match(/\b(\d{1,2})\s*\/\s*(20\d{2})\b/);
+  if(m)return `${Number(m[1])}/${m[2]}`;
+  const fm=String(fileName).match(/\bP(\d{1,2})\b/i);
+  if(fm){
+    const year=(text.match(/\b20\d{2}\b/)||[])[0]||new Date().getFullYear();
+    return `${Number(fm[1])}/${year}`;
+  }
+  return '';
+}
+
+function findTotalsFromText(text){
+  const compact=text.replace(/\n/g,' ');
+  const totalMatch=compact.match(
+    /Total[\s:]*([0-9][0-9,]*\.\d{2})[\s|]+([0-9][0-9,]*\.\d{2})[\s\S]{0,60}?Neto[:\s]*([0-9][0-9,]*\.\d{2})/i
+  );
+  if(totalMatch){
+    return {
+      perceptions:parseTelmexMoney(totalMatch[1])||0,
+      deductions:parseTelmexMoney(totalMatch[2])||0,
+      net:parseTelmexMoney(totalMatch[3])||0
+    };
+  }
+
+  const netMatch=compact.match(/(?:Pago\s+Neto|Neto)[:\s]*\$?\s*([0-9][0-9,]*\.\d{2})/i);
+  let perceptions=0,deductions=0;
+  const perceptionsMatch=compact.match(/Percepciones[\s\S]{0,70}?\$?\s*([0-9][0-9,]*\.\d{2})/i);
+  const deductionsMatch=compact.match(/Deducciones[\s\S]{0,70}?\$?\s*([0-9][0-9,]*\.\d{2})/i);
+  if(perceptionsMatch)perceptions=parseTelmexMoney(perceptionsMatch[1])||0;
+  if(deductionsMatch)deductions=parseTelmexMoney(deductionsMatch[1])||0;
+  const net=netMatch?parseTelmexMoney(netMatch[1])||0:0;
+  return {perceptions,deductions,net};
+}
+
+const TELMEX_CONCEPTS=[
+  {code:'03',desc:'Sueldo',kind:'percepcion'},
+  {code:'12',desc:'Productividad',kind:'percepcion'},
+  {code:'13',desc:'Manejo',kind:'percepcion'},
+  {code:'20',desc:'Ayuda renta',kind:'percepcion'},
+  {code:'21',desc:'Ayuda pasajes',kind:'percepcion'},
+  {code:'22',desc:'Ayuda despensa',kind:'percepcion'},
+  {code:'23',desc:'Tiempo ext doble',kind:'percepcion'},
+  {code:'24',desc:'Indem dia descanso',kind:'percepcion'},
+  {code:'51',desc:'Ahorro 11.53%',kind:'ahorro'},
+  {code:'53',desc:'Cuotas sindicales',kind:'deduccion'},
+  {code:'54',desc:'Seguro sindicato',kind:'deduccion'},
+  {code:'55',desc:'Impuesto',kind:'impuesto'},
+  {code:'69',desc:'Amort INFONAVIT',kind:'deduccion'},
+  {code:'74',desc:'Descuento caja',kind:'deduccion'},
+  {code:'93',desc:'Retención caja',kind:'deduccion'},
+  {code:'95',desc:'Seguro',kind:'deduccion'},
+  {code:'99',desc:'Ajuste redondeo',kind:'deduccion'}
+];
+
+function normalizeSearchText(s=''){
+  return String(s).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9.% ]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function parseConceptsFromOcr(text){
+  const lines=normalizeOcrText(text).split('\n').map(x=>x.trim()).filter(Boolean);
+  const out=[];
+
+  for(const line of lines){
+    const clean=normalizeSearchText(line);
+    for(const def of TELMEX_CONCEPTS){
+      const codeRegex=new RegExp(`^\\s*${def.code.replace('.','\\.')}\\b`);
+      const descWords=normalizeSearchText(def.desc).split(' ').filter(w=>w.length>2);
+      const descHit=descWords.filter(w=>clean.includes(w)).length>=Math.min(2,descWords.length);
+      if(!codeRegex.test(line) && !descHit)continue;
+
+      const vals=moneyTokens(line);
+      if(!vals.length)continue;
+      let amount;
+      if(def.kind==='percepcion'){
+        amount=vals[vals.length-1];
+      }else{
+        amount=vals[0];
+      }
+
+      let hours=null;
+      if(/tiempo\s+ext/i.test(line)){
+        const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number);
+        if(nums.length>=2){
+          const candidate=nums.find(n=>n>0&&n<=24&&Math.abs(n-amount)>.001);
+          if(Number.isFinite(candidate))hours=candidate;
+        }
+      }
+
+      const uniqueCode=def.code==='95'
+        ? `${def.code}.${out.filter(c=>String(c.code).startsWith('95')).length}`
+        : def.code;
+
+      out.push({
+        code:uniqueCode,
+        description:def.desc,
+        kind:def.kind,
+        hours,
+        amount
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+function inferSpecialTelmexDocument(text,fileName=''){
+  const t=normalizeSearchText(`${fileName} ${text}`);
+  if(t.includes('gastos educacionales'))return {documentType:'Nómina extraordinaria',extraordinary:true};
+  if(t.includes('aguinaldo'))return {documentType:'Nómina extraordinaria',extraordinary:true};
+  if(t.includes('premio del ahorro')||/\bahorro\b/.test(t)&&t.includes('acumulado')){
+    return {documentType:'Ahorro',extraordinary:true};
+  }
+  return {documentType:'Nómina semanal',extraordinary:false};
+}
+
+function parseTelmexOcr(text,file){
+  const clean=normalizeOcrText(text);
+  const totals=findTotalsFromText(clean);
+  const concepts=parseConceptsFromOcr(clean);
+  const taxConcept=concepts.find(c=>c.kind==='impuesto');
+  const special=inferSpecialTelmexDocument(clean,file?.name||'');
+
+  const salaryMatch=clean.replace(/\n/g,' ').match(/Salario\s+diario[\s\S]{0,50}?([0-9][0-9,]*\.\d{2})/i);
+  const daysMatch=clean.replace(/\n/g,' ').match(/D[ií]as\s+Periodo[\s\S]{0,30}?(\d{1,2})\b/i);
+
+  return {
+    person:'Ivan',
+    source:'TELMEX',
+    entryType:'nomina',
+    documentType:special.documentType,
+    paymentDate:findTelmexDate(clean),
+    period:findTelmexPeriod(clean,file?.name||''),
+    periodDays:daysMatch?Number(daysMatch[1]):0,
+    dailySalary:salaryMatch?parseTelmexMoney(salaryMatch[1])||0:0,
+    perceptions:totals.perceptions,
+    deductions:totals.deductions,
+    taxes:taxConcept?.amount||0,
+    net:totals.net,
+    extraordinary:special.extraordinary,
+    parserProfile:'telmex-local-ocr',
+    concepts,
+    fileName:file?.name||'',
+    ocrText:clean,
+    ocrSource:'OCR local · primera página',
+    createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+}
+
+async function extractPdfTextAndCanvas(file){
+  const pdfjs=await ensurePdfJs();
+  const data=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data}).promise;
+  const page=await pdf.getPage(1);
+
+  let nativeText='';
+  try{
+    const content=await page.getTextContent();
+    nativeText=content.items.map(x=>x.str).join(' ');
+  }catch{}
+
+  const viewport=page.getViewport({scale:2.15});
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  await page.render({canvasContext:ctx,viewport}).promise;
+
+  return {nativeText:normalizeOcrText(nativeText),canvas};
+}
+
+async function getTelmexOcrWorker(onProgress){
+  const T=await ensureTesseract();
+  if(!telmexOcrWorker){
+    telmexOcrWorker=await T.createWorker('spa',1,{
+      logger:m=>{
+        if(m.status==='recognizing text'&&typeof m.progress==='number'&&typeof getTelmexOcrWorker._progress==='function'){
+          getTelmexOcrWorker._progress(m.progress*100);
+        }
+      }
+    });
+  }
+  getTelmexOcrWorker._progress=onProgress;
+  return telmexOcrWorker;
+}
+
+async function readTelmexPdfLocally(file,onProgress=()=>{}){
+  onProgress(3);
+  const {nativeText,canvas}=await extractPdfTextAndCanvas(file);
+
+  // Use embedded PDF text if it is truly rich enough; TELMEX PDFs often expose only "Depósito en Banco".
+  if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
+    onProgress(100);
+    const parsed=parseTelmexOcr(nativeText,file);
+    parsed.ocrSource='Texto interno del PDF · primera página';
+    return parsed;
+  }
+
+  onProgress(8);
+  const worker=await getTelmexOcrWorker(onProgress);
+  const result=await worker.recognize(canvas);
+  onProgress(100);
+  return parseTelmexOcr(result?.data?.text||'',file);
+}
+
+async function processOnePayslip(file,person,profile,onProgress=()=>{}){
   if(profile==='yorsky'){
     return normalizePayslipData({
       person:'Yorsky',source:'Nómina Yorsky',paymentDate:'',period:'',
       perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
-      parserProfile:'yorsky',concepts:[],fileName:file.name
+      parserProfile:'yorsky',concepts:[],fileName:file.name,
+      ocrText:'',ocrSource:'Perfil pendiente de construir'
     },file);
   }
-  const form=new FormData();
-  form.append('file',file);
-  form.append('person',person);
-  form.append('profile',profile);
-  const response=await fetch('/api/nomina/leer',{method:'POST',body:form});
-  if(!response.ok)throw new Error('reader unavailable');
-  const data=await response.json();
-  return normalizePayslipData({...data,person,parserProfile:profile},file);
+
+  if(profile==='telmex'){
+    const data=await readTelmexPdfLocally(file,onProgress);
+    return normalizePayslipData(data,file);
+  }
+
+  // Generic profile: try the same OCR engine, but keep it in review mode.
+  const {canvas}=await extractPdfTextAndCanvas(file);
+  const worker=await getTelmexOcrWorker(onProgress);
+  const result=await worker.recognize(canvas);
+  return normalizePayslipData({
+    person,source:'Nómina',paymentDate:'',period:'',
+    perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
+    parserProfile:'generic-local-ocr',concepts:[],
+    ocrText:normalizeOcrText(result?.data?.text||''),
+    ocrSource:'OCR genérico · requiere revisión'
+  },file);
 }
 
 async function processPayslip(){
@@ -632,7 +971,15 @@ async function processPayslip(){
     payslipQueue[i].status='processing';
     renderBatchQueue();
     try{
-      const data=await processOnePayslip(payslipQueue[i].file,person,profile);
+      const data=await processOnePayslip(
+        payslipQueue[i].file,
+        person,
+        profile,
+        progress=>{
+          payslipQueue[i].progress=progress;
+          renderBatchQueue();
+        }
+      );
       payslipQueue[i].data=data;
       payslipQueue[i].status=validationState(data);
     }catch(err){
@@ -645,7 +992,7 @@ async function processPayslip(){
   const review=payslipQueue.filter(x=>x.status==='review').length;
   const error=payslipQueue.filter(x=>x.status==='error').length;
   if(valid)toast(`${valid} volante${valid===1?'':'s'} validado${valid===1?'':'s'}.`);
-  if(review||error)toast(`${review} para revisar · ${error} con error.`,'warn');
+  if(review||error)toast(`${review} para revisar · ${error} con error. Abre 👁 para revisar el texto detectado.`,'warn');
   const first=payslipQueue.findIndex(x=>x.data);
   if(first>=0)openBatchPreview(first);
 }
@@ -680,6 +1027,8 @@ function normalizePayslipData(raw,file=null){
       accumulated:c.accumulated??c.acumulado??null
     })),
     fileName:file?.name||d.fileName||'',
+    ocrText:d.ocrText||'',
+    ocrSource:d.ocrSource||'',
     createdAt:d.createdAt||new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
@@ -697,6 +1046,13 @@ function renderPayslipPreview(raw){
   document.getElementById('previewDeductions').textContent=money(d.deductions);
   document.getElementById('previewTaxes').textContent=money(d.taxes);
   document.getElementById('previewNet').textContent=money(d.net);
+
+  const ocrDetails=document.getElementById('previewOcrDetails');
+  const ocrText=document.getElementById('previewOcrText');
+  const ocrSource=document.getElementById('previewOcrSource');
+  if(ocrSource)ocrSource.textContent=d.ocrSource||'';
+  if(ocrDetails)ocrDetails.style.display=d.ocrText?'':'none';
+  if(ocrText)ocrText.textContent=d.ocrText||'';
 
   const calc=d.perceptions-d.deductions;
   const ok=Math.abs(calc-d.net)<0.02;
