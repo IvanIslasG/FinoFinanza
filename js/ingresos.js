@@ -258,7 +258,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v4.1</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -797,6 +797,7 @@ const TELMEX_CONCEPTS=[
   {code:'03',desc:'Sueldo',kind:'percepcion'},
   {code:'12',desc:'Productividad',kind:'percepcion'},
   {code:'17',desc:'Aguinaldo',kind:'percepcion'},
+  {code:'18',desc:'Gtos educacionales',kind:'percepcion'},
   {code:'13',desc:'Manejo',kind:'percepcion'},
   {code:'20',desc:'Ayuda renta',kind:'percepcion'},
   {code:'21',desc:'Ayuda pasajes',kind:'percepcion'},
@@ -1096,6 +1097,98 @@ async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
   return parseBottomSummaryText([textA,textB].join('\n'));
 }
 
+
+function telmexSpecialKind(text='',fileName=''){
+  const t=normalizeSearchText(`${fileName} ${text}`);
+  if(t.includes('anticipo aguinaldo'))return 'aguinaldo';
+  if(t.includes('gastos educ') || t.includes('gtos educacionales'))return 'educacionales';
+  return '';
+}
+
+async function ocrNumericCell(worker,canvas,left,top,width,height){
+  const crop=cropCanvas(canvas,left,top,width,height,3.0);
+  try{
+    await worker.setParameters({
+      tessedit_pageseg_mode:'7',
+      tessedit_char_whitelist:'0123456789,.-',
+      preserve_interword_spaces:'1'
+    });
+  }catch{}
+  const result=await worker.recognize(crop);
+  const text=normalizeOcrText(result?.data?.text||'');
+  const vals=moneyTokens(text);
+  return {value:vals.length?vals[0]:null,text};
+}
+
+async function readTelmexShortSpecial(canvas,kind,onProgress=()=>{}){
+  const worker=await getTelmexOcrWorker(onProgress);
+
+  const rowYs = kind==='aguinaldo'
+    ? [0.405,0.425,0.445,0.466,0.486]
+    : [0.405,0.428,0.451,0.474];
+
+  const codes = kind==='aguinaldo'
+    ? ['17','54','55','74','99']
+    : ['18','55','74','99'];
+
+  const defs = {
+    '17':{description:'Aguinaldo',kind:'percepcion'},
+    '18':{description:'Gtos educacionales',kind:'percepcion'},
+    '54':{description:'Seguro sindicato',kind:'deduccion'},
+    '55':{description:'Impuesto',kind:'impuesto'},
+    '74':{description:'Descuento caja',kind:'deduccion'},
+    '99':{description:'Ajuste redondeo',kind:'deduccion'}
+  };
+
+  const concepts=[];
+  const debug=[];
+
+  for(let i=0;i<codes.length;i++){
+    const code=codes[i], y=rowYs[i], def=defs[code];
+    const x=def.kind==='percepcion' ? 0.445 : 0.560;
+    const w=def.kind==='percepcion' ? 0.115 : 0.105;
+
+    const cell=await ocrNumericCell(worker,canvas,x,y,w,0.028);
+    debug.push(`${code}: ${cell.text}`);
+
+    if(Number.isFinite(cell.value)){
+      concepts.push({
+        code,
+        description:def.description,
+        kind:def.kind,
+        hours:null,
+        amount:Math.abs(cell.value)
+      });
+    }
+  }
+
+  const pCell=await ocrNumericCell(worker,canvas,0.420,0.735,0.150,0.038);
+  const dCell=await ocrNumericCell(worker,canvas,0.550,0.735,0.120,0.038);
+  const nCell=await ocrNumericCell(worker,canvas,0.700,0.735,0.155,0.038);
+
+  debug.push(`TOTAL P: ${pCell.text}`);
+  debug.push(`TOTAL D: ${dCell.text}`);
+  debug.push(`NETO: ${nCell.text}`);
+
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''}); }catch{}
+
+  const perceptions=pCell.value;
+  const deductions=dCell.value;
+  const net=nCell.value;
+  const reliable=[perceptions,deductions,net].every(Number.isFinite)
+    && Math.abs((perceptions-deductions)-net)<0.05;
+
+  return {
+    concepts,
+    perceptions:Number.isFinite(perceptions)?Math.abs(perceptions):0,
+    deductions:Number.isFinite(deductions)?Math.abs(deductions):0,
+    net:Number.isFinite(net)?Math.abs(net):0,
+    taxes:Number(concepts.find(c=>c.code==='55')?.amount||0),
+    reliable,
+    debug:debug.join('\n')
+  };
+}
+
 async function readTelmexPdfLocally(file,onProgress=()=>{}){
   onProgress(3);
 
@@ -1112,7 +1205,6 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
   let parsed=null;
   const stageErrors=[];
 
-  // 1) General page OCR: this is the essential fallback.
   try{
     if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
       fullText=nativeText;
@@ -1121,7 +1213,7 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     }else{
       onProgress(8);
       const worker=await getTelmexOcrWorker(onProgress);
-      try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+      try{ await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''}); }catch{}
       const result=await worker.recognize(canvas);
       fullText=result?.data?.text||'';
       parsed=parseTelmexOcr(fullText,file);
@@ -1129,37 +1221,69 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     }
   }catch(err){
     stageErrors.push(`OCR general: ${err?.message||err}`);
+    const special=inferSpecialTelmexDocument('',file?.name||'');
     parsed=normalizePayslipData({
-      person:'Ivan',
-      source:'TELMEX',
-      entryType:'nomina',
-      documentType:inferSpecialTelmexDocument('',file?.name||'').documentType,
-      paymentDate:'',
-      period:'',
-      perceptions:0,
-      deductions:0,
-      taxes:0,
-      net:0,
-      extraordinary:inferSpecialTelmexDocument('',file?.name||'').extraordinary,
-      parserProfile:'telmex-local-ocr',
-      concepts:[],
-      fileName:file?.name||'',
-      totalsReliable:false,
-      totalsSource:'No leído'
+      person:'Ivan',source:'TELMEX',entryType:'nomina',
+      documentType:special.documentType,paymentDate:'',period:'',
+      perceptions:0,deductions:0,taxes:0,net:0,
+      extraordinary:special.extraordinary,parserProfile:'telmex-local-ocr',
+      concepts:[],fileName:file?.name||'',totalsReliable:false,totalsSource:'No leído'
     },file);
+  }
+
+  const specialKind=telmexSpecialKind(fullText,file?.name||'');
+
+  if(specialKind){
+    try{
+      onProgress(68);
+      const specialData=await readTelmexShortSpecial(
+        canvas,
+        specialKind,
+        p=>onProgress(Math.min(98,68+p*0.30))
+      );
+
+      if(specialData.concepts.length)parsed.concepts=specialData.concepts;
+      if(specialData.taxes>0)parsed.taxes=specialData.taxes;
+
+      if(specialData.reliable){
+        parsed.perceptions=specialData.perceptions;
+        parsed.deductions=specialData.deductions;
+        parsed.net=specialData.net;
+        parsed.totalsReliable=true;
+        parsed.totalsSource='Tabla corta TELMEX · celdas independientes';
+      }else{
+        parsed.totalsReliable=false;
+        parsed.totalsSource='Tabla corta TELMEX · requiere revisión';
+      }
+
+      parsed.ocrText=[
+        normalizeOcrText(fullText),
+        '',
+        '--- LECTOR ESPECIAL TELMEX ---',
+        specialData.debug||'',
+        '',
+        '--- DIAGNÓSTICO ---',
+        stageErrors.length?stageErrors.join('\n'):'Sin errores de ejecución'
+      ].join('\n');
+
+      parsed.ocrSource=[
+        parsed.ocrSource||'OCR TELMEX',
+        specialKind==='aguinaldo'?'Perfil: Anticipo Aguinaldo':'Perfil: Gastos Educacionales'
+      ].join(' · ');
+
+      onProgress(100);
+      return parsed;
+    }catch(err){
+      stageErrors.push(`Lector especial: ${err?.message||err}`);
+    }
   }
 
   let table={concepts:[],text:''};
   let bottom={perceptions:0,deductions:0,net:0,reliable:false,text:''};
 
-  // 2) Specialized concept-table OCR: non-fatal.
   try{
     onProgress(72);
-    table=await readTelmexConceptTable(
-      canvas,
-      p=>onProgress(Math.min(87,72+p*0.15))
-    );
-
+    table=await readTelmexConceptTable(canvas,p=>onProgress(Math.min(87,72+p*0.15)));
     if(table?.concepts?.length){
       parsed.concepts=table.concepts;
       const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
@@ -1169,7 +1293,6 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     stageErrors.push(`Tabla de conceptos: ${err?.message||err}`);
   }
 
-  // Full-page fallback for code 55.
   if(!(parsed.taxes>0)){
     try{
       const full=normalizeOcrText(fullText).split('\n').join(' ');
@@ -1178,14 +1301,9 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     }catch{}
   }
 
-  // 3) Specialized totals OCR: non-fatal.
   try{
     onProgress(89);
-    bottom=await readTelmexBottomTotals(
-      canvas,
-      p=>onProgress(Math.min(99,89+p*0.10))
-    );
-
+    bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,89+p*0.10)));
     if(bottom?.reliable){
       parsed.perceptions=bottom.perceptions;
       parsed.deductions=bottom.deductions;
@@ -1203,21 +1321,16 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
   }
 
   parsed.ocrText=[
-    normalizeOcrText(fullText),
-    '',
-    '--- OCR TABLA DE CONCEPTOS ---',
-    table?.text||'',
-    '',
-    '--- OCR RESUMEN INFERIOR ---',
-    bottom?.text||'',
-    '',
+    normalizeOcrText(fullText),'',
+    '--- OCR TABLA DE CONCEPTOS ---',table?.text||'','',
+    '--- OCR RESUMEN INFERIOR ---',bottom?.text||'','',
     '--- DIAGNÓSTICO ---',
-    stageErrors.length ? stageErrors.join('\n') : 'Sin errores de ejecución'
+    stageErrors.length?stageErrors.join('\n'):'Sin errores de ejecución'
   ].join('\n');
 
   parsed.ocrSource=[
     parsed.ocrSource||'OCR TELMEX',
-    stageErrors.length ? `Advertencias: ${stageErrors.length}` : ''
+    stageErrors.length?`Advertencias: ${stageErrors.length}`:''
   ].filter(Boolean).join(' · ');
 
   onProgress(100);
