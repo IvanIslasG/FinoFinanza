@@ -1067,6 +1067,81 @@ function parseBottomSummaryText(text){
   return {perceptions:0,deductions:0,net:0,reliable:false,text:clean};
 }
 
+
+function parseTelmexTableText(text){
+  const clean=normalizeOcrText(text);
+  const lines=clean.split('\n').map(x=>x.trim()).filter(Boolean);
+  const concepts=[];
+
+  const defs=new Map(TELMEX_CONCEPTS.map(d=>[String(d.code).replace(/^0/,''),d]));
+
+  for(const line of lines){
+    // OCR may put a small border character before the code, so do not require true line start.
+    const codeMatch=line.match(/(?:^|[\s|])(\d{1,2})(?:[.,](\d))?\s+([A-Za-zÁÉÍÓÚÑáéíóúñ])/);
+    if(!codeMatch)continue;
+
+    const base=String(Number(codeMatch[1]));
+    const suffix=codeMatch[2] ? `.${codeMatch[2]}` : '';
+    const printedCode=base.padStart(2,'0')+suffix;
+
+    const def=defs.get(base) || defs.get(base.padStart(2,'0'));
+    if(!def)continue;
+
+    const vals=moneyTokens(line);
+    if(!vals.length)continue;
+
+    let amount;
+    if(def.kind==='percepcion'){
+      amount=vals[vals.length-1];
+    }else{
+      amount=vals[0];
+    }
+
+    let hours=null;
+    if(/tiempo\s+ext/i.test(line)){
+      const decimals=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
+        .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
+      if(decimals.length>=2)hours=decimals[1];
+      else if(decimals.length===1)hours=decimals[0];
+    }
+
+    const duplicate=concepts.some(c=>
+      c.code===printedCode &&
+      Math.abs(Number(c.amount||0)-Number(amount||0))<0.01
+    );
+    if(duplicate)continue;
+
+    concepts.push({
+      code:printedCode,
+      description:def.desc,
+      kind:def.kind,
+      hours,
+      amount
+    });
+  }
+
+  return {concepts,text:clean};
+}
+
+async function readTelmexConceptTable(canvas,onProgress=()=>{}){
+  // Central table on TELMEX payrolls: below "Depósito en Banco" and above totals.
+  const crop=cropCanvas(canvas,0.005,0.335,0.985,0.405,2.0);
+  const worker=await getTelmexOcrWorker(onProgress);
+
+  try{
+    await worker.setParameters({
+      tessedit_pageseg_mode:'6',
+      preserve_interword_spaces:'1'
+    });
+  }catch{}
+
+  const result=await worker.recognize(crop);
+
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+
+  return parseTelmexTableText(result?.data?.text||'');
+}
+
 async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
   const crop=cropCanvas(canvas,0.01,0.70,0.84,0.28,1.9);
   const worker=await getTelmexOcrWorker(onProgress);
@@ -1099,8 +1174,18 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     parsed.ocrSource='OCR local · primera página';
   }
 
-  onProgress(92);
-  const bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,92+p*0.07)));
+  // Read concept table independently.
+  onProgress(78);
+  const table=await readTelmexConceptTable(canvas,p=>onProgress(Math.min(90,78+p*0.12)));
+  if(table.concepts.length){
+    parsed.concepts=table.concepts;
+    const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
+    parsed.taxes=tax ? Number(tax.amount||0) : 0;
+  }
+
+  // Read printed totals independently.
+  onProgress(91);
+  const bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,91+p*0.08)));
 
   if(bottom.reliable){
     parsed.perceptions=bottom.perceptions;
@@ -1113,8 +1198,18 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     parsed.totalsSource='Reconstruido / requiere revisión';
   }
 
+  // If totals OCR fails, do not invent totals from repeated/bad concepts.
+  // Keep them at zero unless a value came from the independent total reader.
+  if(!bottom.reliable){
+    parsed.perceptions=0;
+    parsed.deductions=0;
+  }
+
   parsed.ocrText=[
     normalizeOcrText(fullText),
+    '',
+    '--- OCR TABLA DE CONCEPTOS ---',
+    table.text||'',
     '',
     '--- OCR RESUMEN INFERIOR ---',
     bottom.text||''
@@ -1246,6 +1341,7 @@ function renderPayslipPreview(raw){
   if(ocrSource){
     const parts=[d.ocrSource||''];
     if(d.totalsSource)parts.push(`Totales: ${d.totalsSource}`);
+    if(Array.isArray(d.concepts) && d.concepts.length)parts.push(`Conceptos detectados: ${d.concepts.length}`);
     if(d.taxes>0)parts.push(`Impuesto detectado: ${money(d.taxes)}`);
     ocrSource.textContent=parts.filter(Boolean).join(' · ');
   }
