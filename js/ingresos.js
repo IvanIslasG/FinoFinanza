@@ -512,7 +512,6 @@ async function saveManualIncome(e){
     toast('Ingreso guardado.');
   }
   resetManualForm();
-  refreshSelectedFiles();
   await renderIncomeHistory();
 }
 
@@ -710,33 +709,6 @@ function renderPayslipPreview(raw){
   document.getElementById('previewConceptRows').innerHTML=d.concepts.length
     ? d.concepts.map(c=>`<tr><td>${esc(c.code)}</td><td>${esc(c.description)}</td><td>${esc(c.kind)}</td><td>${c.hours??''}</td><td>${money(c.amount)}</td></tr>`).join('')
     : '<tr><td colspan="5" style="text-align:center;color:#667085">Sin conceptos detectados</td></tr>';
-}
-async function processPayslip(){
-  if(!selectedIncomeFile)return;
-  const person=document.getElementById('payslipPerson').value;
-  const profile=document.getElementById('payslipProfile').value;
-  if(profile==='yorsky'){
-    toast('El perfil de Yorsky está preparado, pero falta un volante real para enseñarle su formato.','warn');
-    renderPayslipPreview({
-      person:'Yorsky',source:'Nómina Yorsky',entryType:'nomina',
-      paymentDate:'',period:'',perceptions:0,deductions:0,taxes:0,net:0,
-      documentType:'Nómina',parserProfile:'yorsky',concepts:[]
-    });
-    return;
-  }
-  try{
-    const form=new FormData();
-    form.append('file',selectedIncomeFile);
-    form.append('person',person);
-    form.append('profile',profile);
-    const response=await fetch('/api/nomina/leer',{method:'POST',body:form});
-    if(!response.ok)throw new Error('reader unavailable');
-    const data=await response.json();
-    renderPayslipPreview({...data,person,parserProfile:profile});
-    toast('Volante procesado. Revisa los datos antes de guardarlo.');
-  }catch{
-    toast('El OCR real aún no está conectado. La interfaz y el guardado ya están listos.','warn');
-  }
 }
 async function savePayslip(){
   if(!currentPayslipPreview)return;
@@ -966,6 +938,7 @@ export async function initIngresos(){
   renderIncomeShell();
   bindIncomeEvents();
   resetManualForm();
+  refreshSelectedFiles();
   try{
     await openIncomeDb();
     await renderIncomeHistory();
