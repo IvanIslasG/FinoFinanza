@@ -587,7 +587,8 @@ function validationState(d){
   const n=Number(d.net||0);
   const calc=p-de;
   if(!d.paymentDate||!d.period)return 'review';
-  if(!(p>0)||!(n>=0))return 'review';
+  if(!(p>0)||!(de>=0)||!(n>=0))return 'review';
+  if(!d.totalsReliable)return 'review';
   return Math.abs(calc-n)<0.02?'valid':'review';
 }
 
@@ -845,11 +846,10 @@ function parseConceptsFromOcr(text){
 
       let hours=null;
       if(/tiempo\s+ext/i.test(line)){
-        const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number);
-        if(nums.length>=2){
-          const candidate=nums.find(n=>n>0&&n<=24&&Math.abs(n-amount)>.001);
-          if(Number.isFinite(candidate))hours=candidate;
-        }
+        const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
+          .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
+        if(nums.length>=2)hours=nums[1];
+        else if(nums.length===1)hours=nums[0];
       }
 
       const uniqueCode=def.code==='95'
@@ -941,6 +941,8 @@ function parseTelmexOcr(text,file){
     parserProfile:'telmex-local-ocr',
     concepts,
     fileName:file?.name||'',
+    totalsReliable:false,
+    totalsSource:'Reconstruido / requiere revisión',
     ocrText:clean,
     ocrSource:'OCR local · primera página',
     createdAt:new Date().toISOString(),
@@ -985,23 +987,107 @@ async function getTelmexOcrWorker(onProgress){
   return telmexOcrWorker;
 }
 
+
+function cropCanvas(source,leftRatio,topRatio,widthRatio,heightRatio,scale=1.8){
+  const sx=Math.floor(source.width*leftRatio);
+  const sy=Math.floor(source.height*topRatio);
+  const sw=Math.floor(source.width*widthRatio);
+  const sh=Math.floor(source.height*heightRatio);
+  const out=document.createElement('canvas');
+  out.width=Math.max(1,Math.floor(sw*scale));
+  out.height=Math.max(1,Math.floor(sh*scale));
+  const ctx=out.getContext('2d',{willReadFrequently:true});
+  ctx.drawImage(source,sx,sy,sw,sh,0,0,out.width,out.height);
+  return out;
+}
+
+function parseBottomSummaryText(text){
+  const clean=normalizeOcrText(text);
+  const joined=clean.replace(/\n/g,' ');
+
+  const p=joined.match(/Percepciones[\s:$]*([0-9][0-9,]*\.\d{2})/i);
+  const d=joined.match(/Deducciones[\s:$]*([0-9][0-9,]*\.\d{2})/i);
+  const n=joined.match(/(?:Pago\s*Neto|Neto)[\s:$]*([0-9][0-9,]*\.\d{2})/i);
+
+  if(p&&d&&n){
+    const perceptions=parseTelmexMoney(p[1]);
+    const deductions=parseTelmexMoney(d[1]);
+    const net=parseTelmexMoney(n[1]);
+    if([perceptions,deductions,net].every(Number.isFinite)){
+      return {perceptions,deductions,net,reliable:true,text:clean};
+    }
+  }
+
+  const vals=moneyTokens(clean).filter(v=>v>=0);
+  for(let i=0;i<vals.length;i++){
+    for(let j=i+1;j<vals.length;j++){
+      for(let k=j+1;k<vals.length;k++){
+        const a=vals[i],b=vals[j],c=vals[k];
+        if(a>1000 && b>0 && Math.abs((a-b)-c)<0.05){
+          return {perceptions:a,deductions:b,net:c,reliable:true,text:clean};
+        }
+      }
+    }
+  }
+
+  return {perceptions:0,deductions:0,net:0,reliable:false,text:clean};
+}
+
+async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
+  const crop=cropCanvas(canvas,0.01,0.70,0.84,0.28,1.9);
+  const worker=await getTelmexOcrWorker(onProgress);
+  try{
+    await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
+  }catch{}
+  const result=await worker.recognize(crop);
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+  return parseBottomSummaryText(result?.data?.text||'');
+}
+
 async function readTelmexPdfLocally(file,onProgress=()=>{}){
   onProgress(3);
   const {nativeText,canvas}=await extractPdfTextAndCanvas(file);
 
-  // Use embedded PDF text if it is truly rich enough; TELMEX PDFs often expose only "Depósito en Banco".
+  let fullText='';
+  let parsed=null;
+
   if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
-    onProgress(100);
-    const parsed=parseTelmexOcr(nativeText,file);
+    fullText=nativeText;
+    parsed=parseTelmexOcr(nativeText,file);
     parsed.ocrSource='Texto interno del PDF · primera página';
-    return parsed;
+  }else{
+    onProgress(8);
+    const worker=await getTelmexOcrWorker(onProgress);
+    try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+    const result=await worker.recognize(canvas);
+    fullText=result?.data?.text||'';
+    parsed=parseTelmexOcr(fullText,file);
+    parsed.ocrSource='OCR local · primera página';
   }
 
-  onProgress(8);
-  const worker=await getTelmexOcrWorker(onProgress);
-  const result=await worker.recognize(canvas);
+  onProgress(92);
+  const bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,92+p*0.07)));
+
+  if(bottom.reliable){
+    parsed.perceptions=bottom.perceptions;
+    parsed.deductions=bottom.deductions;
+    parsed.net=bottom.net;
+    parsed.totalsReliable=true;
+    parsed.totalsSource='Resumen inferior TELMEX';
+  }else{
+    parsed.totalsReliable=false;
+    parsed.totalsSource='Reconstruido / requiere revisión';
+  }
+
+  parsed.ocrText=[
+    normalizeOcrText(fullText),
+    '',
+    '--- OCR RESUMEN INFERIOR ---',
+    bottom.text||''
+  ].join('\n');
+
   onProgress(100);
-  return parseTelmexOcr(result?.data?.text||'',file);
+  return parsed;
 }
 
 async function processOnePayslip(file,person,profile,onProgress=()=>{}){
@@ -1100,6 +1186,8 @@ function normalizePayslipData(raw,file=null){
     fileName:file?.name||d.fileName||'',
     ocrText:d.ocrText||'',
     ocrSource:d.ocrSource||'',
+    totalsSource:d.totalsSource||'',
+    totalsReliable:Boolean(d.totalsReliable),
     createdAt:d.createdAt||new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
@@ -1121,17 +1209,26 @@ function renderPayslipPreview(raw){
   const ocrDetails=document.getElementById('previewOcrDetails');
   const ocrText=document.getElementById('previewOcrText');
   const ocrSource=document.getElementById('previewOcrSource');
-  if(ocrSource)ocrSource.textContent=d.ocrSource||'';
+  if(ocrSource){
+    const parts=[d.ocrSource||''];
+    if(d.totalsSource)parts.push(`Totales: ${d.totalsSource}`);
+    ocrSource.textContent=parts.filter(Boolean).join(' · ');
+  }
   if(ocrDetails)ocrDetails.style.display=d.ocrText?'':'none';
   if(ocrText)ocrText.textContent=d.ocrText||'';
 
   const calc=d.perceptions-d.deductions;
   const ok=Math.abs(calc-d.net)<0.02;
   const val=document.getElementById('previewValidation');
-  val.className='income-validation '+(ok?'ok':'warn');
-  val.textContent=ok
-    ? `✓ Validado: ${money(d.perceptions)} − ${money(d.deductions)} = ${money(d.net)}`
-    : `⚠ Revisar: el cálculo da ${money(calc)} y el neto leído es ${money(d.net)}.`;
+  const trulyValid=ok && d.totalsReliable;
+  val.className='income-validation '+(trulyValid?'ok':'warn');
+  if(trulyValid){
+    val.textContent=`✓ Validado con totales impresos: ${money(d.perceptions)} − ${money(d.deductions)} = ${money(d.net)}`;
+  }else if(ok){
+    val.textContent='⚠ Los valores cuadran, pero fueron reconstruidos. Revisar contra el volante.';
+  }else{
+    val.textContent=`⚠ Revisar: el cálculo da ${money(calc)} y el neto leído es ${money(d.net)}.`;
+  }
 
   document.getElementById('previewConceptRows').innerHTML=d.concepts.length
     ? d.concepts.map(c=>`<tr><td>${esc(c.code)}</td><td>${esc(c.description)}</td><td>${esc(c.kind)}</td><td>${c.hours??''}</td><td>${money(c.amount)}</td></tr>`).join('')
