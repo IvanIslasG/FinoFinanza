@@ -258,7 +258,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.1</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -383,7 +383,7 @@ function renderIncomeShell(){
                 </div>
                 <div class="income-actions" style="justify-content:flex-start">
                   <button class="income-btn primary" id="incomeProcessPdf" type="button" disabled>Procesar todos</button>
-                  <button class="income-btn good" id="saveAllPayslipsBtn" type="button" disabled>Guardar todos los válidos</button>
+                  <button class="income-btn good" id="saveAllPayslipsBtn" type="button" disabled>Guardar todos los volantes</button>
                   <button class="income-btn" id="incomeDemoP39" type="button">Ejemplo P39</button>
                 </div>
                 <div class="income-toolbar-note">
@@ -436,7 +436,7 @@ function renderIncomeShell(){
                     </table>
                   </div>
                   <div class="income-actions">
-                    <button class="income-btn good" id="savePayslipBtn" type="button">Guardar volante</button>
+                    <button class="income-btn good" id="savePayslipBtn" type="button">Guardar este volante</button>
                   </div>
                 </div>
               </div>
@@ -623,7 +623,9 @@ function renderBatchQueue(){
   tbody.querySelectorAll('[data-open-batch]').forEach(btn=>{
     btn.addEventListener('click',()=>openBatchPreview(Number(btn.dataset.openBatch)));
   });
-  document.getElementById('saveAllPayslipsBtn').disabled=!payslipQueue.some(x=>x.status==='valid');
+  document.getElementById('saveAllPayslipsBtn').disabled=!payslipQueue.some(x=>
+    x.data && ['valid','review'].includes(x.status)
+  );
 }
 
 function openBatchPreview(index){
@@ -1519,26 +1521,82 @@ async function savePayslip(){
 
 
 async function saveAllValidPayslips(){
-  const validItems=payslipQueue.filter(item=>item.status==='valid'&&item.data);
-  if(!validItems.length){toast('No hay volantes validados para guardar.','warn');return;}
+  const candidates=payslipQueue.filter(item=>
+    item.data && ['valid','review'].includes(item.status)
+  );
+
+  if(!candidates.length){
+    toast('No hay volantes procesados para guardar.','warn');
+    return;
+  }
+
+  const reviewCount=candidates.filter(item=>item.status==='review').length;
+  let includeReview=false;
+
+  if(reviewCount){
+    includeReview=confirm(
+      `${reviewCount} volante${reviewCount===1?'':'s'} está${reviewCount===1?'':'n'} marcado${reviewCount===1?'':'s'} como "Revisar".\n\n`+
+      `Aceptar = guardar también esos volantes.\nCancelar = guardar únicamente los validados.`
+    );
+  }
+
+  const toSave=candidates.filter(item=>
+    item.status==='valid' || (includeReview && item.status==='review')
+  );
+
+  if(!toSave.length){
+    toast('No hay volantes validados para guardar.','warn');
+    return;
+  }
+
   const existing=await incomeGetAll();
   let saved=0,skipped=0;
-  for(const item of validItems){
-    const d=item.data;
+
+  for(const item of toSave){
+    const d={...item.data};
+
+    if(currentPayslipQueueIndex!==null && payslipQueue[currentPayslipQueueIndex]===item){
+      d.paymentDate=document.getElementById('previewPaymentDate')?.value||d.paymentDate;
+      d.period=document.getElementById('previewPeriod')?.value.trim()||d.period;
+      d.documentType=document.getElementById('previewDocumentType')?.value||d.documentType;
+      d.extraordinary=document.getElementById('previewExtraordinary')?.value==='true';
+    }
+
     const duplicate=existing.find(x=>
-      x.entryType==='nomina'&&x.person===d.person&&x.paymentDate===d.paymentDate&&
-      String(x.period||'')===String(d.period||'')&&x.source===d.source
+      x.entryType==='nomina' &&
+      x.person===d.person &&
+      x.paymentDate===d.paymentDate &&
+      String(x.period||'')===String(d.period||'') &&
+      x.source===d.source &&
+      String(x.documentType||'')===String(d.documentType||'')
     );
-    if(duplicate){skipped++;continue;}
-    await incomeAdd({...d,createdAt:d.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()});
-    existing.push(d);
+
+    if(duplicate){
+      skipped++;
+      continue;
+    }
+
+    const savedItem={
+      ...d,
+      reviewRequired:item.status==='review',
+      importStatus:item.status,
+      createdAt:d.createdAt||new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    };
+
+    await incomeAdd(savedItem);
+    existing.push(savedItem);
     saved++;
   }
+
   await renderIncomeHistory();
+
   if(saved)toast(`${saved} volante${saved===1?'':'s'} guardado${saved===1?'':'s'}.`);
-  if(skipped)toast(`${skipped} duplicado${skipped===1?'':'s'} omitido${skipped===1?'':'s'}.`,'warn');
+  if(skipped)setTimeout(()=>toast(`${skipped} duplicado${skipped===1?'':'s'} omitido${skipped===1?'':'s'}.`,'warn'),250);
+
   if(saved)switchIncomeView('history');
 }
+
 
 function collectHistoryFilters(){
   return {
