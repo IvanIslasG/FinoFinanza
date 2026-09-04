@@ -214,6 +214,7 @@ function injectIncomeStyles(){
     #ingresos .income-ai-btn{border:1px solid #c7d7fe;background:#eef4ff;color:#3538cd;border-radius:9px;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer}
     #ingresos .income-ai-btn:disabled{opacity:.55;cursor:not-allowed}
     #ingresos .income-ai-config{display:flex;gap:6px;align-items:center;flex:1;min-width:260px}
+
     #ingresos .income-ai-config input{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-size:10px}
 
     
@@ -472,7 +473,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.6 · catálogos locales e historial</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.8 · IA desde Configuración</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -626,13 +627,8 @@ function renderIncomeShell(){
                   <div class="income-ai-panel" id="incomeAiPanel" style="display:none">
                     <div class="income-ai-row">
                       <button class="income-ai-btn" id="incomeAiAnalyzeBtn" type="button">✦ Analizar con IA</button>
-                      <div class="income-ai-config">
-                        <input id="incomeAiEndpoint" type="url" placeholder="Endpoint seguro de IA">
-                        <input id="incomeAiAccessToken" type="password" placeholder="Clave familiar de IA">
-                        <button class="income-btn" id="incomeAiSaveEndpoint" type="button">Guardar acceso</button>
-                      </div>
                     </div>
-                    <div class="income-ai-note" id="incomeAiNote">La IA es privada. Solo funciona con la clave familiar; el OCR local sigue disponible para todos.</div>
+                    <div class="income-ai-note" id="incomeAiNote"></div>
                   </div>
                   <details class="income-ocr-details" id="previewOcrDetails" style="display:none">
                     <summary>Ver texto detectado</summary>
@@ -1781,14 +1777,8 @@ async function analyzeCurrentPayslipWithAi(){
   const endpoint=getAiFallbackEndpoint();
   const accessToken=getAiAccessToken();
 
-  if(!endpoint){
-    toast('Configura primero el endpoint seguro de IA.','warn');
-    document.getElementById('incomeAiEndpoint')?.focus();
-    return;
-  }
-  if(!accessToken){
-    toast('Ingresa la clave familiar para usar la IA.','warn');
-    document.getElementById('incomeAiAccessToken')?.focus();
+  if(!endpoint || !accessToken){
+    toast('Configura el acceso a IA desde el módulo Configuración.','warn');
     return;
   }
 
@@ -1890,13 +1880,23 @@ function renderPayslipPreview(raw){
   const ok=Math.abs(calc-d.net)<0.02;
 
   const aiPanel=document.getElementById('incomeAiPanel');
-  const aiEndpointInput=document.getElementById('incomeAiEndpoint');
-  const aiTokenInput=document.getElementById('incomeAiAccessToken');
-  if(aiEndpointInput)aiEndpointInput.value=getAiFallbackEndpoint();
-  if(aiTokenInput)aiTokenInput.value=getAiAccessToken();
+  const aiBtn=document.getElementById('incomeAiAnalyzeBtn');
+  const aiNote=document.getElementById('incomeAiNote');
+  const aiConfigured=Boolean(getAiFallbackEndpoint() && getAiAccessToken());
   if(aiPanel){
     const queueItem=currentPayslipQueueIndex!==null ? payslipQueue[currentPayslipQueueIndex] : null;
     aiPanel.style.display=queueItem?.status==='review' ? '' : 'none';
+  }
+  if(aiBtn){
+    aiBtn.disabled=!aiConfigured;
+    aiBtn.title=aiConfigured
+      ? 'Analizar este volante con IA'
+      : 'Configura IA desde el módulo Configuración';
+  }
+  if(aiNote){
+    aiNote.textContent=aiConfigured
+      ? 'IA privada habilitada para este dispositivo.'
+      : 'IA deshabilitada. Configura el acceso desde Configuración.';
   }
   const val=document.getElementById('previewValidation');
   const trulyValid=ok && d.totalsReliable;
@@ -2193,12 +2193,6 @@ function bindIncomeEvents(){
     toast('Ejemplo P39 cargado. Revisa y guarda cuando quieras.');
   });
   document.getElementById('savePayslipBtn').addEventListener('click',savePayslip);
-
-  document.getElementById('incomeAiSaveEndpoint')?.addEventListener('click',()=>{
-    const endpointSaved=setAiFallbackEndpoint(document.getElementById('incomeAiEndpoint')?.value||'');
-    const tokenSaved=setAiAccessToken(document.getElementById('incomeAiAccessToken')?.value||'');
-    toast(endpointSaved&&tokenSaved?'Acceso privado de IA guardado.':'Falta endpoint o clave familiar.',endpointSaved&&tokenSaved?'ok':'warn');
-  });
 
   document.getElementById('incomeAiAnalyzeBtn')?.addEventListener('click',analyzeCurrentPayslipWithAi);
 
