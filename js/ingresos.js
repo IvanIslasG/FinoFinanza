@@ -3,8 +3,10 @@ const INCOME_DB_VERSION=1;
 const INCOME_STORE='ingresos';
 
 let incomeDb=null;
-let selectedIncomeFile=null;
+let selectedIncomeFiles=[];
+let payslipQueue=[];
 let currentPayslipPreview=null;
+let currentPayslipQueueIndex=null;
 let editingIncomeId=null;
 let incomeView='manual';
 
@@ -172,6 +174,15 @@ function injectIncomeStyles(){
     #ingresos .income-drop p{font-size:11px;color:var(--muted);margin:0 0 12px}
     #ingresos .income-file-meta{display:none;margin-top:9px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;font-size:11px}
     #ingresos .income-file-meta.show{display:flex;justify-content:space-between;align-items:center;gap:10px}
+    #ingresos .income-selected-files{display:grid;gap:5px;margin-top:8px;max-height:145px;overflow:auto}
+    #ingresos .income-selected-file{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 8px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;font-size:10px}
+    #ingresos .income-selected-file button{border:0;background:transparent;cursor:pointer;color:#b42318;font-size:12px}
+    #ingresos .income-batch-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:800;border:1px solid var(--line);white-space:nowrap}
+    #ingresos .income-batch-status.pending{background:#f8fafc;color:#667085}
+    #ingresos .income-batch-status.processing{background:#eff8ff;color:#175cd3;border-color:#b2ddff}
+    #ingresos .income-batch-status.valid{background:#ecfdf3;color:#067647;border-color:#abefc6}
+    #ingresos .income-batch-status.review{background:#fffaeb;color:#b54708;border-color:#fedf89}
+    #ingresos .income-batch-status.error{background:#fef3f2;color:#b42318;border-color:#fecdca}
     #ingresos .income-preview-empty{border:1px dashed var(--line);border-radius:12px;padding:30px 16px;text-align:center;color:var(--muted);font-size:12px}
     #ingresos .income-preview{display:none}
     #ingresos .income-preview.show{display:block}
@@ -342,18 +353,24 @@ function renderIncomeShell(){
                 </div>
                 <div class="income-drop" id="incomeDropzone">
                   <div>
-                    <strong>Arrastra aquí el volante</strong>
-                    <p>o selecciona un PDF desde tu equipo.</p>
+                    <strong>Arrastra aquí uno o varios volantes</strong>
+                    <p>o selecciona múltiples PDF desde tu equipo.</p>
                     <button class="income-btn" id="incomeSelectPdf" type="button">Seleccionar PDF</button>
-                    <input id="incomePdfInput" type="file" accept="application/pdf,.pdf" hidden>
+                    <input id="incomePdfInput" type="file" accept="application/pdf,.pdf" multiple hidden>
                   </div>
                 </div>
                 <div class="income-file-meta" id="incomeFileMeta">
-                  <div><strong id="incomeFileName">—</strong><div id="incomeFileSize" style="color:#667085"></div></div>
-                  <button class="income-btn" id="incomeRemovePdf" type="button">Quitar</button>
+                  <div style="width:100%">
+                    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+                      <strong id="incomeFileCount">0 archivos</strong>
+                      <button class="income-btn" id="incomeRemovePdf" type="button">Vaciar cola</button>
+                    </div>
+                    <div id="incomeSelectedFiles" class="income-selected-files"></div>
+                  </div>
                 </div>
                 <div class="income-actions" style="justify-content:flex-start">
-                  <button class="income-btn primary" id="incomeProcessPdf" type="button" disabled>Procesar volante</button>
+                  <button class="income-btn primary" id="incomeProcessPdf" type="button" disabled>Procesar todos</button>
+                  <button class="income-btn good" id="saveAllPayslipsBtn" type="button" disabled>Guardar todos los válidos</button>
                   <button class="income-btn" id="incomeDemoP39" type="button">Ejemplo P39</button>
                 </div>
                 <div class="income-toolbar-note">
@@ -362,6 +379,14 @@ function renderIncomeShell(){
               </div>
 
               <div>
+                <div id="incomeBatchPanel" style="display:none;margin-bottom:12px">
+                  <div class="income-table-wrap">
+                    <table class="income-table" style="min-width:720px">
+                      <thead><tr><th>Archivo</th><th>Fecha</th><th>Periodo</th><th>Neto</th><th>Estado</th><th></th></tr></thead>
+                      <tbody id="incomeBatchRows"></tbody>
+                    </table>
+                  </div>
+                </div>
                 <div class="income-preview-empty" id="incomePreviewEmpty">Procesa un volante para revisar sus datos antes de guardarlo.</div>
                 <div class="income-preview" id="incomePreview">
                   <div class="income-form-grid" style="margin-bottom:10px">
@@ -487,27 +512,146 @@ async function saveManualIncome(e){
     toast('Ingreso guardado.');
   }
   resetManualForm();
+  refreshSelectedFiles();
   await renderIncomeHistory();
 }
 
-function setPdfFile(file){
-  if(!file)return;
-  if(file.type!=='application/pdf'&&!file.name.toLowerCase().endsWith('.pdf')){
-    toast('El archivo debe ser PDF.','warn');return;
+
+function refreshSelectedFiles(){
+  const meta=document.getElementById('incomeFileMeta');
+  const list=document.getElementById('incomeSelectedFiles');
+  const count=document.getElementById('incomeFileCount');
+  const process=document.getElementById('incomeProcessPdf');
+  count.textContent=`${selectedIncomeFiles.length} archivo${selectedIncomeFiles.length===1?'':'s'}`;
+  list.innerHTML=selectedIncomeFiles.map((file,index)=>`
+    <div class="income-selected-file">
+      <span title="${esc(file.name)}">${esc(file.name)} · ${(file.size/1024).toFixed(1)} KB</span>
+      <button type="button" data-remove-selected="${index}" title="Quitar">×</button>
+    </div>`).join('');
+  list.querySelectorAll('[data-remove-selected]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      selectedIncomeFiles.splice(Number(btn.dataset.removeSelected),1);
+      refreshSelectedFiles();
+    });
+  });
+  meta.classList.toggle('show',selectedIncomeFiles.length>0);
+  process.disabled=selectedIncomeFiles.length===0;
+}
+
+function addPdfFiles(files){
+  const incoming=[...(files||[])].filter(file=>
+    file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')
+  );
+  if(!incoming.length){toast('Selecciona archivos PDF.','warn');return;}
+  for(const file of incoming){
+    if(!selectedIncomeFiles.some(f=>f.name===file.name&&f.size===file.size)){
+      selectedIncomeFiles.push(file);
+    }
   }
-  selectedIncomeFile=file;
-  document.getElementById('incomeFileName').textContent=file.name;
-  document.getElementById('incomeFileSize').textContent=`${(file.size/1024).toFixed(1)} KB`;
-  document.getElementById('incomeFileMeta').classList.add('show');
-  document.getElementById('incomeProcessPdf').disabled=false;
+  refreshSelectedFiles();
 }
+
 function clearPdfFile(){
-  selectedIncomeFile=null;
+  selectedIncomeFiles=[];
+  payslipQueue=[];
+  currentPayslipQueueIndex=null;
   document.getElementById('incomePdfInput').value='';
-  document.getElementById('incomeFileMeta').classList.remove('show');
-  document.getElementById('incomeProcessPdf').disabled=true;
+  document.getElementById('incomeBatchPanel').style.display='none';
+  document.getElementById('incomeBatchRows').innerHTML='';
+  document.getElementById('saveAllPayslipsBtn').disabled=true;
+  document.getElementById('incomePreview').classList.remove('show');
+  document.getElementById('incomePreviewEmpty').style.display='';
+  refreshSelectedFiles();
 }
-function normalizePayslipData(raw){
+
+function validationState(d){
+  const calc=Number(d.perceptions||0)-Number(d.deductions||0);
+  if(!d.paymentDate||!d.period)return 'review';
+  return Math.abs(calc-Number(d.net||0))<0.02?'valid':'review';
+}
+
+function renderBatchQueue(){
+  const panel=document.getElementById('incomeBatchPanel');
+  const tbody=document.getElementById('incomeBatchRows');
+  if(!payslipQueue.length){
+    panel.style.display='none';
+    tbody.innerHTML='';
+    document.getElementById('saveAllPayslipsBtn').disabled=true;
+    return;
+  }
+  panel.style.display='';
+  const labels={pending:'Pendiente',processing:'Procesando',valid:'Validado',review:'Revisar',error:'Error'};
+  tbody.innerHTML=payslipQueue.map((item,index)=>{
+    const d=item.data||{};
+    return `<tr>
+      <td><strong>${esc(item.file.name)}</strong></td>
+      <td>${d.paymentDate?localDate(d.paymentDate):'—'}</td>
+      <td>${esc(d.period||'—')}</td>
+      <td>${item.data?money(d.net):'—'}</td>
+      <td><span class="income-batch-status ${item.status}">${labels[item.status]||item.status}</span></td>
+      <td><button class="income-icon-btn" type="button" data-open-batch="${index}" title="Revisar">👁</button></td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('[data-open-batch]').forEach(btn=>{
+    btn.addEventListener('click',()=>openBatchPreview(Number(btn.dataset.openBatch)));
+  });
+  document.getElementById('saveAllPayslipsBtn').disabled=!payslipQueue.some(x=>x.status==='valid');
+}
+
+function openBatchPreview(index){
+  const item=payslipQueue[index];
+  if(!item?.data)return;
+  currentPayslipQueueIndex=index;
+  renderPayslipPreview(item.data);
+}
+
+async function processOnePayslip(file,person,profile){
+  if(profile==='yorsky'){
+    return normalizePayslipData({
+      person:'Yorsky',source:'Nómina Yorsky',paymentDate:'',period:'',
+      perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
+      parserProfile:'yorsky',concepts:[],fileName:file.name
+    },file);
+  }
+  const form=new FormData();
+  form.append('file',file);
+  form.append('person',person);
+  form.append('profile',profile);
+  const response=await fetch('/api/nomina/leer',{method:'POST',body:form});
+  if(!response.ok)throw new Error('reader unavailable');
+  const data=await response.json();
+  return normalizePayslipData({...data,person,parserProfile:profile},file);
+}
+
+async function processPayslip(){
+  if(!selectedIncomeFiles.length)return;
+  const person=document.getElementById('payslipPerson').value;
+  const profile=document.getElementById('payslipProfile').value;
+  payslipQueue=selectedIncomeFiles.map(file=>({file,status:'pending',data:null,error:null}));
+  renderBatchQueue();
+  for(let i=0;i<payslipQueue.length;i++){
+    payslipQueue[i].status='processing';
+    renderBatchQueue();
+    try{
+      const data=await processOnePayslip(payslipQueue[i].file,person,profile);
+      payslipQueue[i].data=data;
+      payslipQueue[i].status=validationState(data);
+    }catch(err){
+      payslipQueue[i].status='error';
+      payslipQueue[i].error=err?.message||'No se pudo procesar';
+    }
+    renderBatchQueue();
+  }
+  const valid=payslipQueue.filter(x=>x.status==='valid').length;
+  const review=payslipQueue.filter(x=>x.status==='review').length;
+  const error=payslipQueue.filter(x=>x.status==='error').length;
+  if(valid)toast(`${valid} volante${valid===1?'':'s'} validado${valid===1?'':'s'}.`);
+  if(review||error)toast(`${review} para revisar · ${error} con error.`,'warn');
+  const first=payslipQueue.findIndex(x=>x.data);
+  if(first>=0)openBatchPreview(first);
+}
+
+function normalizePayslipData(raw,file=null){
   const d={...raw};
   return {
     person:d.person||document.getElementById('payslipPerson').value,
@@ -536,7 +680,7 @@ function normalizePayslipData(raw){
       amount:Number(c.amount??c.importe??0),
       accumulated:c.accumulated??c.acumulado??null
     })),
-    fileName:selectedIncomeFile?.name||d.fileName||'',
+    fileName:file?.name||d.fileName||'',
     createdAt:d.createdAt||new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
@@ -607,6 +751,11 @@ async function savePayslip(){
   if(!d.paymentDate){
     toast('Indica la fecha de pago antes de guardar.','warn');return;
   }
+  if(currentPayslipQueueIndex!==null && payslipQueue[currentPayslipQueueIndex]){
+    payslipQueue[currentPayslipQueueIndex].data=d;
+    payslipQueue[currentPayslipQueueIndex].status=validationState(d);
+    renderBatchQueue();
+  }
   const all=await incomeGetAll();
   const duplicate=all.find(x=>x.entryType==='nomina'&&x.person===d.person&&x.paymentDate===d.paymentDate&&String(x.period||'')===String(d.period||'')&&x.source===d.source);
   if(duplicate){
@@ -620,6 +769,29 @@ async function savePayslip(){
   }
   await renderIncomeHistory();
   switchIncomeView('history');
+}
+
+
+async function saveAllValidPayslips(){
+  const validItems=payslipQueue.filter(item=>item.status==='valid'&&item.data);
+  if(!validItems.length){toast('No hay volantes validados para guardar.','warn');return;}
+  const existing=await incomeGetAll();
+  let saved=0,skipped=0;
+  for(const item of validItems){
+    const d=item.data;
+    const duplicate=existing.find(x=>
+      x.entryType==='nomina'&&x.person===d.person&&x.paymentDate===d.paymentDate&&
+      String(x.period||'')===String(d.period||'')&&x.source===d.source
+    );
+    if(duplicate){skipped++;continue;}
+    await incomeAdd({...d,createdAt:d.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString()});
+    existing.push(d);
+    saved++;
+  }
+  await renderIncomeHistory();
+  if(saved)toast(`${saved} volante${saved===1?'':'s'} guardado${saved===1?'':'s'}.`);
+  if(skipped)toast(`${skipped} duplicado${skipped===1?'':'s'} omitido${skipped===1?'':'s'}.`,'warn');
+  if(saved)switchIncomeView('history');
 }
 
 function collectHistoryFilters(){
@@ -754,16 +926,21 @@ function bindIncomeEvents(){
   const fileInput=document.getElementById('incomePdfInput');
   const drop=document.getElementById('incomeDropzone');
   document.getElementById('incomeSelectPdf').addEventListener('click',()=>fileInput.click());
-  fileInput.addEventListener('change',e=>setPdfFile(e.target.files?.[0]));
+  fileInput.addEventListener('change',e=>addPdfFiles(e.target.files));
   ['dragenter','dragover'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.classList.add('dragover')}));
   ['dragleave','drop'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.classList.remove('dragover')}));
-  drop.addEventListener('drop',e=>setPdfFile(e.dataTransfer.files?.[0]));
+  drop.addEventListener('drop',e=>addPdfFiles(e.dataTransfer.files));
   document.getElementById('incomeRemovePdf').addEventListener('click',clearPdfFile);
   document.getElementById('incomeProcessPdf').addEventListener('click',processPayslip);
+  document.getElementById('saveAllPayslipsBtn').addEventListener('click',saveAllValidPayslips);
   document.getElementById('incomeDemoP39').addEventListener('click',()=>{
     document.getElementById('payslipPerson').value='Ivan';
     document.getElementById('payslipProfile').value='telmex';
-    renderPayslipPreview(P39_DEMO);
+    const fakeFile={name:'P39_demo.pdf',size:0};
+    const data=normalizePayslipData(P39_DEMO,fakeFile);
+    payslipQueue=[{file:fakeFile,status:validationState(data),data,error:null}];
+    renderBatchQueue();
+    openBatchPreview(0);
     toast('Ejemplo P39 cargado. Revisa y guarda cuando quieras.');
   });
   document.getElementById('savePayslipBtn').addEventListener('click',savePayslip);
