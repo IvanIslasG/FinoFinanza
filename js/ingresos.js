@@ -258,7 +258,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial.</p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v4</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -1037,28 +1037,31 @@ function cropCanvas(source,leftRatio,topRatio,widthRatio,heightRatio,scale=1.8){
 
 function parseBottomSummaryText(text){
   const clean=normalizeOcrText(text);
-  const joined=clean.replace(/\n/g,' ');
+  const joined=clean.split('\n').join(' ');
 
-  const p=joined.match(/Percepciones[\s:$]*([0-9][0-9,]*\.\d{2})/i);
-  const d=joined.match(/Deducciones[\s:$]*([0-9][0-9,]*\.\d{2})/i);
-  const n=joined.match(/(?:Pago\s*Neto|Neto)[\s:$]*([0-9][0-9,]*\.\d{2})/i);
+  const p=joined.match(/Percepciones[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
+  const d=joined.match(/Deducciones[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
+  const n=joined.match(/(?:Pago\s*Neto|Neto)[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
 
   if(p&&d&&n){
     const perceptions=parseTelmexMoney(p[1]);
     const deductions=parseTelmexMoney(d[1]);
     const net=parseTelmexMoney(n[1]);
-    if([perceptions,deductions,net].every(Number.isFinite)){
+    if([perceptions,deductions,net].every(Number.isFinite) &&
+       Math.abs((perceptions-deductions)-net)<0.05){
       return {perceptions,deductions,net,reliable:true,text:clean};
     }
   }
 
-  const vals=moneyTokens(clean).filter(v=>v>=0);
+  const vals=moneyTokens(clean).filter(v=>v>=0 && v<1000000);
   for(let i=0;i<vals.length;i++){
-    for(let j=i+1;j<vals.length;j++){
-      for(let k=j+1;k<vals.length;k++){
-        const a=vals[i],b=vals[j],c=vals[k];
-        if(a>1000 && b>0 && Math.abs((a-b)-c)<0.05){
-          return {perceptions:a,deductions:b,net:c,reliable:true,text:clean};
+    for(let j=0;j<vals.length;j++){
+      if(i===j)continue;
+      for(let k=0;k<vals.length;k++){
+        if(k===i||k===j)continue;
+        const P=vals[i],D=vals[j],N=vals[k];
+        if(P>=N && P>1000 && Math.abs((P-D)-N)<0.05){
+          return {perceptions:P,deductions:D,net:N,reliable:true,text:clean};
         }
       }
     }
@@ -1066,91 +1069,31 @@ function parseBottomSummaryText(text){
 
   return {perceptions:0,deductions:0,net:0,reliable:false,text:clean};
 }
-
-
-function parseTelmexTableText(text){
-  const clean=normalizeOcrText(text);
-  const lines=clean.split('\n').map(x=>x.trim()).filter(Boolean);
-  const concepts=[];
-
-  const defs=new Map(TELMEX_CONCEPTS.map(d=>[String(d.code).replace(/^0/,''),d]));
-
-  for(const line of lines){
-    // OCR may put a small border character before the code, so do not require true line start.
-    const codeMatch=line.match(/(?:^|[\s|])(\d{1,2})(?:[.,](\d))?\s+([A-Za-zÁÉÍÓÚÑáéíóúñ])/);
-    if(!codeMatch)continue;
-
-    const base=String(Number(codeMatch[1]));
-    const suffix=codeMatch[2] ? `.${codeMatch[2]}` : '';
-    const printedCode=base.padStart(2,'0')+suffix;
-
-    const def=defs.get(base) || defs.get(base.padStart(2,'0'));
-    if(!def)continue;
-
-    const vals=moneyTokens(line);
-    if(!vals.length)continue;
-
-    let amount;
-    if(def.kind==='percepcion'){
-      amount=vals[vals.length-1];
-    }else{
-      amount=vals[0];
-    }
-
-    let hours=null;
-    if(/tiempo\s+ext/i.test(line)){
-      const decimals=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
-        .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
-      if(decimals.length>=2)hours=decimals[1];
-      else if(decimals.length===1)hours=decimals[0];
-    }
-
-    const duplicate=concepts.some(c=>
-      c.code===printedCode &&
-      Math.abs(Number(c.amount||0)-Number(amount||0))<0.01
-    );
-    if(duplicate)continue;
-
-    concepts.push({
-      code:printedCode,
-      description:def.desc,
-      kind:def.kind,
-      hours,
-      amount
-    });
-  }
-
-  return {concepts,text:clean};
-}
-
 async function readTelmexConceptTable(canvas,onProgress=()=>{}){
-  // Central table on TELMEX payrolls: below "Depósito en Banco" and above totals.
-  const crop=cropCanvas(canvas,0.005,0.335,0.985,0.405,2.0);
+  const crop=cropCanvas(canvas,0.002,0.30,0.995,0.47,2.25);
   const worker=await getTelmexOcrWorker(onProgress);
-
   try{
-    await worker.setParameters({
-      tessedit_pageseg_mode:'6',
-      preserve_interword_spaces:'1'
-    });
+    await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
   }catch{}
-
   const result=await worker.recognize(crop);
-
   try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
-
   return parseTelmexTableText(result?.data?.text||'');
 }
 
 async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
-  const crop=cropCanvas(canvas,0.01,0.70,0.84,0.28,1.9);
   const worker=await getTelmexOcrWorker(onProgress);
+  const cropA=cropCanvas(canvas,0.005,0.68,0.94,0.17,2.3);
+  const cropB=cropCanvas(canvas,0.015,0.79,0.92,0.19,2.3);
+
+  let textA='',textB='';
   try{
-    await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
+    await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
   }catch{}
-  const result=await worker.recognize(crop);
+  try{ textA=(await worker.recognize(cropA))?.data?.text||''; }catch{}
+  try{ textB=(await worker.recognize(cropB))?.data?.text||''; }catch{}
   try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
-  return parseBottomSummaryText(result?.data?.text||'');
+
+  return parseBottomSummaryText([textA,textB].join('\n'));
 }
 
 async function readTelmexPdfLocally(file,onProgress=()=>{}){
@@ -1181,6 +1124,12 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     parsed.concepts=table.concepts;
     const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
     parsed.taxes=tax ? Number(tax.amount||0) : 0;
+  }
+
+  if(!(parsed.taxes>0)){
+    const full=normalizeOcrText(fullText).split('\n').join(' ');
+    const taxMatch=full.match(/(?:^|\s)55\s+Impuesto[\s\S]{0,80}?([0-9][0-9,]*\.\d{2})/i);
+    if(taxMatch)parsed.taxes=parseTelmexMoney(taxMatch[1])||0;
   }
 
   // Read printed totals independently.
