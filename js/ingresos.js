@@ -9,6 +9,15 @@ let currentPayslipPreview=null;
 let currentPayslipQueueIndex=null;
 let editingIncomeId=null;
 let incomeView='manual';
+let incomeHistorySort={key:'date',dir:'desc'};
+
+const INCOME_PEOPLE_KEY='finoFinanza.incomePeople';
+const INCOME_SOURCES_KEY='finoFinanza.incomeSources';
+const INCOME_CATEGORIES_KEY='finoFinanza.incomeCategories';
+
+const BASE_INCOME_SOURCES=['TELMEX','Renta','Trabajo extra','Venta','Devolución','Regalo','Otro'];
+const BASE_INCOME_CATEGORIES=['Nómina','Renta','Trabajo extra','Venta','Devolución','Regalo','Premio / Bono','Otro'];
+
 
 let pdfJsReadyPromise=null;
 let tesseractReadyPromise=null;
@@ -230,7 +239,18 @@ function injectIncomeStyles(){
     #ingresos .income-pill.telmex{background:#eef4ff;color:#3538cd;border-color:#c7d7fe}
     #ingresos .income-pill.yorsky{background:#fdf2fa;color:#c11574;border-color:#fcceee}
     #ingresos .income-pill.manual{background:#ecfdf3;color:#067647;border-color:#abefc6}
-    #ingresos .income-filters{display:grid;grid-template-columns:minmax(180px,1fr) repeat(3,minmax(120px,.45fr));gap:8px;margin-bottom:10px}
+    #ingresos .income-pill.payroll{background:#eef4ff;color:#175cd3;border-color:#b2ccff}
+    #ingresos .catalog-field-row{display:flex;gap:6px;align-items:center}
+    #ingresos .catalog-field-row>select,#ingresos .catalog-field-row>input{flex:1;min-width:0}
+    #ingresos .catalog-add-btn{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#155eef;font-weight:900;cursor:pointer}
+    #ingresos .catalog-add-btn:hover{background:#eef4ff;border-color:#b2ccff}
+    #ingresos .income-table th.sortable{cursor:pointer;user-select:none}
+    #ingresos .income-table th.sortable:hover{background:#eef4ff;color:#175cd3}
+    #ingresos .income-table th.active-sort{background:#eef4ff;color:#175cd3}
+    #ingresos .sort-arrow{margin-left:5px;font-size:9px}
+    #ingresos .income-date-range{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+
+    #ingresos .income-filters{display:grid;grid-template-columns:minmax(180px,1fr) repeat(4,minmax(120px,.45fr));gap:8px;margin-bottom:10px}
     #ingresos .income-filters input,#ingresos .income-filters select{width:100%;border:1px solid var(--line);border-radius:9px;padding:8px 9px;font-size:11px;background:#fff}
     #ingresos .income-summary{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:11px;color:#667085}
     #ingresos .income-summary strong{color:#101828;font-size:13px}
@@ -263,6 +283,188 @@ function injectIncomeStyles(){
   document.head.appendChild(style);
 }
 
+
+function uniqueClean(values){
+  return [...new Set((values||[])
+    .map(v=>String(v||'').trim())
+    .filter(Boolean))];
+}
+
+function readLocalList(key,fallback=[]){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(key)||'[]');
+    return uniqueClean([...(Array.isArray(parsed)?parsed:[]),...fallback]);
+  }catch{
+    return uniqueClean(fallback);
+  }
+}
+
+function writeLocalList(key,values){
+  localStorage.setItem(key,JSON.stringify(uniqueClean(values)));
+}
+
+function isFamilyIncomeMode(){
+  // En los dispositivos de Iván/Diana ya existe la clave privada del fallback.
+  // Los testers no la tienen y usan su catálogo local de personas.
+  try{return Boolean(getAiAccessToken());}catch{return false;}
+}
+
+function incomePeople(){
+  if(isFamilyIncomeMode())return ['Ivan','Yorsky'];
+  return readLocalList(INCOME_PEOPLE_KEY,[]);
+}
+
+function incomeSources(){
+  return readLocalList(INCOME_SOURCES_KEY,BASE_INCOME_SOURCES);
+}
+
+function incomeCategories(){
+  // Nómina siempre debe existir y encabezar el catálogo.
+  const values=readLocalList(INCOME_CATEGORIES_KEY,BASE_INCOME_CATEGORIES)
+    .filter(v=>normalizeSearchText(v)!=='nomina');
+  return ['Nómina',...values];
+}
+
+function personDisplayName(value){
+  if(value==='Ivan')return 'Iván';
+  if(value==='Yorsky')return 'Diana / Yorsky';
+  return value||'—';
+}
+
+function fillSelectOptions(select,values,{placeholder='',selected=''}={}){
+  if(!select)return;
+  const list=uniqueClean(values);
+  select.innerHTML=[
+    placeholder?`<option value="">${esc(placeholder)}</option>`:'',
+    ...list.map(v=>`<option value="${esc(v)}">${esc(personDisplayName(v))}</option>`)
+  ].join('');
+  if(selected && list.includes(selected))select.value=selected;
+  else if(!placeholder && list.length)select.value=list[0];
+}
+
+function fillCategoryOptions(selected=''){
+  const select=document.getElementById('manualType');
+  if(!select)return;
+  const values=incomeCategories();
+  select.innerHTML=values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  select.value=values.includes(selected)?selected:(values.includes('Nómina')?'Nómina':values[0]||'');
+}
+
+function fillSourceSuggestions(){
+  const datalist=document.getElementById('incomeSourceSuggestions');
+  if(!datalist)return;
+  datalist.innerHTML=incomeSources().map(v=>`<option value="${esc(v)}"></option>`).join('');
+}
+
+function refreshPeopleUI(selectedManual='',selectedPayslip=''){
+  const people=incomePeople();
+  const family=isFamilyIncomeMode();
+  fillSelectOptions(
+    document.getElementById('manualPerson'),
+    people,
+    {placeholder:family?'':'Da de alta tu nombre',selected:selectedManual}
+  );
+  fillSelectOptions(
+    document.getElementById('payslipPerson'),
+    people,
+    {placeholder:family?'':'Da de alta tu nombre',selected:selectedPayslip}
+  );
+
+  const addBtn=document.getElementById('addIncomePersonBtn');
+  if(addBtn)addBtn.style.display=family?'none':'inline-flex';
+
+  const filter=document.getElementById('incomeFilterPerson');
+  if(filter){
+    const current=filter.value;
+    filter.innerHTML=`<option value="">Todas las personas</option>`+
+      people.map(v=>`<option value="${esc(v)}">${esc(personDisplayName(v))}</option>`).join('');
+    if(people.includes(current))filter.value=current;
+  }
+}
+
+function refreshLocalCatalogUI(){
+  refreshPeopleUI(
+    document.getElementById('manualPerson')?.value||'',
+    document.getElementById('payslipPerson')?.value||''
+  );
+  fillSourceSuggestions();
+  fillCategoryOptions(document.getElementById('manualType')?.value||'');
+}
+
+function addLocalPerson(){
+  if(isFamilyIncomeMode()){
+    toast('En este dispositivo Persona está limitada a Iván y Diana/Yorsky.','warn');
+    return;
+  }
+  const name=prompt('Nombre que quieres dar de alta en este dispositivo:');
+  if(!name?.trim())return;
+  const value=name.trim();
+  const values=readLocalList(INCOME_PEOPLE_KEY,[]);
+  writeLocalList(INCOME_PEOPLE_KEY,[...values,value]);
+  refreshPeopleUI(value,value);
+  toast(`${value} quedó dado de alta localmente.`);
+}
+
+function addLocalSource(){
+  const name=prompt('Nueva fuente de ingreso:');
+  if(!name?.trim())return;
+  const value=name.trim();
+  writeLocalList(INCOME_SOURCES_KEY,[...incomeSources(),value]);
+  fillSourceSuggestions();
+  document.getElementById('manualSource').value=value;
+  toast(`Fuente "${value}" agregada localmente.`);
+}
+
+function addLocalCategory(){
+  const name=prompt('Nueva categoría de ingreso:');
+  if(!name?.trim())return;
+  const raw=name.trim();
+  const value=normalizeSearchText(raw)==='nomina'?'Nómina':raw;
+  writeLocalList(INCOME_CATEGORIES_KEY,[...incomeCategories(),value]);
+  fillCategoryOptions(value);
+  toast(`Categoría "${value}" agregada localmente.`);
+}
+
+function isPayrollIncome(item){
+  if(item?.entryType==='nomina')return true;
+  const category=String(item?.incomeType||item?.documentType||'');
+  return normalizeSearchText(category).includes('nomina');
+}
+
+function historySortValue(item,key){
+  if(key==='date')return String(item.paymentDate||'');
+  if(key==='person')return normalizeSearchText(personDisplayName(item.person));
+  if(key==='source')return normalizeSearchText(item.source||'');
+  if(key==='concept'){
+    return normalizeSearchText(item.entryType==='manual'
+      ? item.concept
+      : `${item.documentType||'Nómina'} ${item.period||''}`);
+  }
+  if(key==='category')return normalizeSearchText(typeLabel(item));
+  if(key==='net')return Number(netFor(item)||0);
+  return '';
+}
+
+function compareHistoryItems(a,b){
+  const key=incomeHistorySort.key;
+  const av=historySortValue(a,key);
+  const bv=historySortValue(b,key);
+  let cmp=0;
+  if(typeof av==='number'&&typeof bv==='number')cmp=av-bv;
+  else cmp=String(av).localeCompare(String(bv),'es',{numeric:true,sensitivity:'base'});
+  if(cmp===0)cmp=Number(a.id||0)-Number(b.id||0);
+  return incomeHistorySort.dir==='asc'?cmp:-cmp;
+}
+
+function updateHistorySortHeaders(){
+  document.querySelectorAll('#ingresos [data-history-sort]').forEach(th=>{
+    const active=th.dataset.historySort===incomeHistorySort.key;
+    th.classList.toggle('active-sort',active);
+    const arrow=th.querySelector('.sort-arrow');
+    if(arrow)arrow.textContent=active?(incomeHistorySort.dir==='asc'?'▲':'▼'):'↕';
+  });
+}
+
 function renderIncomeShell(){
   const section=document.getElementById('ingresos');
   if(!section)return;
@@ -270,7 +472,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.5 · validación financiera</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.6 · catálogos locales e historial</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -291,12 +493,10 @@ function renderIncomeShell(){
               <div class="income-form-grid">
                 <div class="income-field">
                   <label>Persona</label>
-                  <select id="manualPerson">
-                    <option value="Ivan">Iván</option>
-                    <option value="Yorsky">Yorsky</option>
-                    <option value="Familiar">Familiar / compartido</option>
-                    <option value="Otro">Otro</option>
-                  </select>
+                  <div class="catalog-field-row">
+                    <select id="manualPerson"></select>
+                    <button class="catalog-add-btn" id="addIncomePersonBtn" type="button" title="Dar de alta persona">＋</button>
+                  </div>
                 </div>
                 <div class="income-field">
                   <label>Fecha del ingreso</label>
@@ -304,29 +504,18 @@ function renderIncomeShell(){
                 </div>
                 <div class="income-field">
                   <label>Fuente</label>
-                  <input id="manualSource" list="incomeSourceSuggestions" placeholder="Ej. Renta, TELMEX, clases..." required>
-                  <datalist id="incomeSourceSuggestions">
-                    <option value="Renta"></option>
-                    <option value="TELMEX"></option>
-                    <option value="Trabajo extra"></option>
-                    <option value="Venta"></option>
-                    <option value="Devolución"></option>
-                    <option value="Regalo"></option>
-                    <option value="Otro"></option>
-                  </datalist>
+                  <div class="catalog-field-row">
+                    <input id="manualSource" list="incomeSourceSuggestions" placeholder="Ej. TELMEX, renta, negocio..." required>
+                    <button class="catalog-add-btn" id="addIncomeSourceBtn" type="button" title="Dar de alta fuente">＋</button>
+                  </div>
+                  <datalist id="incomeSourceSuggestions"></datalist>
                 </div>
                 <div class="income-field">
                   <label>Categoría</label>
-                  <select id="manualType">
-                    <option value="Sueldo / Nómina">Sueldo / Nómina</option>
-                    <option value="Renta">Renta</option>
-                    <option value="Trabajo extra">Trabajo extra</option>
-                    <option value="Venta">Venta</option>
-                    <option value="Devolución">Devolución</option>
-                    <option value="Regalo">Regalo</option>
-                    <option value="Premio / Bono">Premio / Bono</option>
-                    <option value="Otro">Otro</option>
-                  </select>
+                  <div class="catalog-field-row">
+                    <select id="manualType"></select>
+                    <button class="catalog-add-btn" id="addIncomeCategoryBtn" type="button" title="Dar de alta categoría">＋</button>
+                  </div>
                 </div>
                 <div class="income-field">
                   <label>Concepto</label>
@@ -362,10 +551,7 @@ function renderIncomeShell(){
                 <div class="income-form-grid" style="margin-bottom:10px">
                   <div class="income-field">
                     <label>¿De quién es?</label>
-                    <select id="payslipPerson">
-                      <option value="Ivan">Iván</option>
-                      <option value="Yorsky">Yorsky</option>
-                    </select>
+                    <select id="payslipPerson"></select>
                   </div>
                   <div class="income-field">
                     <label>Perfil de lectura</label>
@@ -477,9 +663,13 @@ function renderIncomeShell(){
           <div class="income-card-body">
             <div class="income-filters">
               <input id="incomeSearch" type="search" placeholder="Buscar fuente, concepto, periodo...">
-              <select id="incomeFilterPerson"><option value="">Todas las personas</option><option value="Ivan">Iván</option><option value="Yorsky">Yorsky</option><option value="Familiar">Familiar</option><option value="Otro">Otro</option></select>
-              <select id="incomeFilterKind"><option value="">Todos los tipos</option><option value="manual">Manual</option><option value="nomina">Nómina</option></select>
-              <input id="incomeFilterMonth" type="month">
+              <select id="incomeFilterPerson"><option value="">Todas las personas</option></select>
+              <select id="incomeFilterKind"><option value="">Todos los tipos</option><option value="manual">Manual</option><option value="nomina">Nómina PDF</option></select>
+              <input id="incomeFilterMonth" type="month" title="Mes específico">
+              <div class="income-date-range">
+                <input id="incomeFilterFrom" type="date" title="Desde">
+                <input id="incomeFilterTo" type="date" title="Hasta">
+              </div>
             </div>
             <div class="income-summary">
               <span id="incomeHistoryShowing">0 registros</span>
@@ -487,7 +677,15 @@ function renderIncomeShell(){
             </div>
             <div class="income-table-wrap">
               <table class="income-table">
-                <thead><tr><th>Fecha</th><th>Persona</th><th>Fuente</th><th>Concepto / periodo</th><th>Categoría</th><th>Neto</th><th></th></tr></thead>
+                <thead><tr>
+                  <th class="sortable active-sort" data-history-sort="date">Fecha <span class="sort-arrow">▼</span></th>
+                  <th class="sortable" data-history-sort="person">Persona <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="source">Fuente <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="concept">Concepto / periodo <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="category">Categoría <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="net">Neto <span class="sort-arrow">↕</span></th>
+                  <th></th>
+                </tr></thead>
                 <tbody id="incomeHistoryRows"></tbody>
               </table>
             </div>
@@ -519,9 +717,11 @@ function resetManualForm(){
   editingIncomeId=null;
   const form=document.getElementById('manualIncomeForm');
   form?.reset();
-  document.getElementById('manualPerson').value='Ivan';
+  refreshLocalCatalogUI();
+  const people=incomePeople();
+  if(people.length)document.getElementById('manualPerson').value=people[0];
   document.getElementById('manualDate').value=new Date().toISOString().slice(0,10);
-  document.getElementById('manualType').value='Otro';
+  fillCategoryOptions('Nómina');
   document.getElementById('manualIncomeTitle').textContent='Registrar ingreso';
   document.getElementById('manualSaveBtn').textContent='Guardar ingreso';
   document.getElementById('manualCancelEdit').style.display='none';
@@ -540,9 +740,13 @@ async function saveManualIncome(e){
     note:document.getElementById('manualNote').value.trim(),
     updatedAt:new Date().toISOString()
   };
-  if(!item.paymentDate||!item.source||!item.concept||item.amount<=0){
-    toast('Completa fecha, fuente, concepto y monto.','warn');return;
+  if(!item.person||!item.paymentDate||!item.source||!item.concept||item.amount<=0){
+    toast('Completa persona, fecha, fuente, concepto y monto.','warn');return;
   }
+
+  if(normalizeSearchText(item.incomeType)==='nomina')item.incomeType='Nómina';
+  writeLocalList(INCOME_SOURCES_KEY,[...incomeSources(),item.source]);
+  writeLocalList(INCOME_CATEGORIES_KEY,[...incomeCategories(),item.incomeType]);
   if(editingIncomeId){
     const old=await incomeGet(editingIncomeId);
     await incomePut({...old,...item,id:editingIncomeId});
@@ -1826,19 +2030,23 @@ function collectHistoryFilters(){
     q:document.getElementById('incomeSearch')?.value.trim().toLowerCase()||'',
     person:document.getElementById('incomeFilterPerson')?.value||'',
     kind:document.getElementById('incomeFilterKind')?.value||'',
-    month:document.getElementById('incomeFilterMonth')?.value||''
+    month:document.getElementById('incomeFilterMonth')?.value||'',
+    from:document.getElementById('incomeFilterFrom')?.value||'',
+    to:document.getElementById('incomeFilterTo')?.value||''
   };
 }
 async function renderIncomeHistory(){
   if(!incomeDb)return;
   const rowsEl=document.getElementById('incomeHistoryRows');
   if(!rowsEl)return;
-  const all=(await incomeGetAll()).sort((a,b)=>String(b.paymentDate||'').localeCompare(String(a.paymentDate||''))||Number(b.id)-Number(a.id));
+  const all=(await incomeGetAll());
   const f=collectHistoryFilters();
   const filtered=all.filter(item=>{
     if(f.person&&item.person!==f.person)return false;
     if(f.kind&&item.entryType!==f.kind)return false;
     if(f.month&&monthKey(item.paymentDate)!==f.month)return false;
+    if(f.from && String(item.paymentDate||'')<f.from)return false;
+    if(f.to && String(item.paymentDate||'')>f.to)return false;
     if(f.q){
       const hay=[
         item.source,item.concept,item.period,item.incomeType,item.documentType,
@@ -1848,6 +2056,8 @@ async function renderIncomeHistory(){
     }
     return true;
   });
+  filtered.sort(compareHistoryItems);
+  updateHistorySortHeaders();
   document.getElementById('incomeHistoryCount').textContent=`${all.length} registro${all.length===1?'':'s'}`;
   document.getElementById('incomeHistoryShowing').textContent=`${filtered.length} de ${all.length} registros`;
   document.getElementById('incomeHistoryTotal').textContent=money(filtered.reduce((s,x)=>s+netFor(x),0));
@@ -1856,10 +2066,18 @@ async function renderIncomeHistory(){
     const concept=item.entryType==='manual'
       ? item.concept
       : `${item.documentType||'Nómina'}${item.period?` · ${item.period}`:''}`;
-    const pillClass=item.entryType==='manual'?'manual':item.source==='TELMEX'?'telmex':item.person==='Yorsky'?'yorsky':'';
+    const pillClass=isPayrollIncome(item)
+      ? 'payroll'
+      : item.entryType==='manual'
+        ? 'manual'
+        : item.source==='TELMEX'
+          ? 'telmex'
+          : item.person==='Yorsky'
+            ? 'yorsky'
+            : '';
     return `<tr class="income-history-row" data-income-id="${item.id}">
       <td>${localDate(item.paymentDate)}</td>
-      <td>${esc(normalizedPerson(item.person))}</td>
+      <td>${esc(personDisplayName(item.person))}</td>
       <td><span class="income-pill ${pillClass}">${esc(item.source||'—')}</span></td>
       <td><strong>${esc(concept||'—')}</strong></td>
       <td>${esc(typeLabel(item))}</td>
@@ -1949,6 +2167,9 @@ function bindIncomeEvents(){
 
   document.getElementById('manualIncomeForm').addEventListener('submit',saveManualIncome);
   document.getElementById('manualCancelEdit').addEventListener('click',resetManualForm);
+  document.getElementById('addIncomePersonBtn')?.addEventListener('click',addLocalPerson);
+  document.getElementById('addIncomeSourceBtn')?.addEventListener('click',addLocalSource);
+  document.getElementById('addIncomeCategoryBtn')?.addEventListener('click',addLocalCategory);
 
   const fileInput=document.getElementById('incomePdfInput');
   const drop=document.getElementById('incomeDropzone');
@@ -1961,7 +2182,8 @@ function bindIncomeEvents(){
   document.getElementById('incomeProcessPdf').addEventListener('click',processPayslip);
   document.getElementById('saveAllPayslipsBtn').addEventListener('click',saveAllValidPayslips);
   document.getElementById('incomeDemoP39').addEventListener('click',()=>{
-    document.getElementById('payslipPerson').value='Ivan';
+    const demoPeople=incomePeople();
+    document.getElementById('payslipPerson').value=demoPeople.includes('Ivan')?'Ivan':(demoPeople[0]||'');
     document.getElementById('payslipProfile').value='telmex';
     const fakeFile={name:'P39_demo.pdf',size:0};
     const data=normalizePayslipData(P39_DEMO,fakeFile);
@@ -1980,9 +2202,21 @@ function bindIncomeEvents(){
 
   document.getElementById('incomeAiAnalyzeBtn')?.addEventListener('click',analyzeCurrentPayslipWithAi);
 
-  ['incomeSearch','incomeFilterPerson','incomeFilterKind','incomeFilterMonth'].forEach(id=>{
+  ['incomeSearch','incomeFilterPerson','incomeFilterKind','incomeFilterMonth','incomeFilterFrom','incomeFilterTo'].forEach(id=>{
     const el=document.getElementById(id);
-    el.addEventListener(id==='incomeSearch'?'input':'change',renderIncomeHistory);
+    el?.addEventListener(id==='incomeSearch'?'input':'change',renderIncomeHistory);
+  });
+
+  document.querySelectorAll('#ingresos [data-history-sort]').forEach(th=>{
+    th.addEventListener('click',()=>{
+      const key=th.dataset.historySort;
+      if(incomeHistorySort.key===key)incomeHistorySort.dir=incomeHistorySort.dir==='asc'?'desc':'asc';
+      else{
+        incomeHistorySort.key=key;
+        incomeHistorySort.dir=key==='date'||key==='net'?'desc':'asc';
+      }
+      renderIncomeHistory();
+    });
   });
 
   document.getElementById('incomeDetailClose').addEventListener('click',()=>document.getElementById('incomeDetailModal').classList.remove('show'));
@@ -1992,6 +2226,7 @@ function bindIncomeEvents(){
 
   document.getElementById('payslipPerson').addEventListener('change',e=>{
     const profile=document.getElementById('payslipProfile');
+    if(!e.target.value)return;
     profile.value=e.target.value==='Yorsky'?'yorsky':'telmex';
   });
 }
@@ -1999,6 +2234,7 @@ function bindIncomeEvents(){
 export async function initIngresos(){
   injectIncomeStyles();
   renderIncomeShell();
+  refreshLocalCatalogUI();
   bindIncomeEvents();
   resetManualForm();
   refreshSelectedFiles();
