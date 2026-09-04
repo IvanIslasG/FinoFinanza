@@ -258,7 +258,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v4</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v4.1</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -1098,71 +1098,127 @@ async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
 
 async function readTelmexPdfLocally(file,onProgress=()=>{}){
   onProgress(3);
-  const {nativeText,canvas}=await extractPdfTextAndCanvas(file);
+
+  let nativeText='',canvas=null;
+  try{
+    const extracted=await extractPdfTextAndCanvas(file);
+    nativeText=extracted.nativeText||'';
+    canvas=extracted.canvas;
+  }catch(err){
+    throw new Error(`No se pudo abrir la primera página del PDF: ${err?.message||err}`);
+  }
 
   let fullText='';
   let parsed=null;
+  const stageErrors=[];
 
-  if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
-    fullText=nativeText;
-    parsed=parseTelmexOcr(nativeText,file);
-    parsed.ocrSource='Texto interno del PDF · primera página';
-  }else{
-    onProgress(8);
-    const worker=await getTelmexOcrWorker(onProgress);
-    try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
-    const result=await worker.recognize(canvas);
-    fullText=result?.data?.text||'';
-    parsed=parseTelmexOcr(fullText,file);
-    parsed.ocrSource='OCR local · primera página';
+  // 1) General page OCR: this is the essential fallback.
+  try{
+    if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
+      fullText=nativeText;
+      parsed=parseTelmexOcr(nativeText,file);
+      parsed.ocrSource='Texto interno del PDF · primera página';
+    }else{
+      onProgress(8);
+      const worker=await getTelmexOcrWorker(onProgress);
+      try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+      const result=await worker.recognize(canvas);
+      fullText=result?.data?.text||'';
+      parsed=parseTelmexOcr(fullText,file);
+      parsed.ocrSource='OCR local · primera página';
+    }
+  }catch(err){
+    stageErrors.push(`OCR general: ${err?.message||err}`);
+    parsed=normalizePayslipData({
+      person:'Ivan',
+      source:'TELMEX',
+      entryType:'nomina',
+      documentType:inferSpecialTelmexDocument('',file?.name||'').documentType,
+      paymentDate:'',
+      period:'',
+      perceptions:0,
+      deductions:0,
+      taxes:0,
+      net:0,
+      extraordinary:inferSpecialTelmexDocument('',file?.name||'').extraordinary,
+      parserProfile:'telmex-local-ocr',
+      concepts:[],
+      fileName:file?.name||'',
+      totalsReliable:false,
+      totalsSource:'No leído'
+    },file);
   }
 
-  // Read concept table independently.
-  onProgress(78);
-  const table=await readTelmexConceptTable(canvas,p=>onProgress(Math.min(90,78+p*0.12)));
-  if(table.concepts.length){
-    parsed.concepts=table.concepts;
-    const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
-    parsed.taxes=tax ? Number(tax.amount||0) : 0;
+  let table={concepts:[],text:''};
+  let bottom={perceptions:0,deductions:0,net:0,reliable:false,text:''};
+
+  // 2) Specialized concept-table OCR: non-fatal.
+  try{
+    onProgress(72);
+    table=await readTelmexConceptTable(
+      canvas,
+      p=>onProgress(Math.min(87,72+p*0.15))
+    );
+
+    if(table?.concepts?.length){
+      parsed.concepts=table.concepts;
+      const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
+      if(tax)parsed.taxes=Number(tax.amount||0);
+    }
+  }catch(err){
+    stageErrors.push(`Tabla de conceptos: ${err?.message||err}`);
   }
 
+  // Full-page fallback for code 55.
   if(!(parsed.taxes>0)){
-    const full=normalizeOcrText(fullText).split('\n').join(' ');
-    const taxMatch=full.match(/(?:^|\s)55\s+Impuesto[\s\S]{0,80}?([0-9][0-9,]*\.\d{2})/i);
-    if(taxMatch)parsed.taxes=parseTelmexMoney(taxMatch[1])||0;
+    try{
+      const full=normalizeOcrText(fullText).split('\n').join(' ');
+      const taxMatch=full.match(/(?:^|\s)55\s+Impuesto[\s\S]{0,80}?([0-9][0-9,]*\.\d{2})/i);
+      if(taxMatch)parsed.taxes=parseTelmexMoney(taxMatch[1])||0;
+    }catch{}
   }
 
-  // Read printed totals independently.
-  onProgress(91);
-  const bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,91+p*0.08)));
+  // 3) Specialized totals OCR: non-fatal.
+  try{
+    onProgress(89);
+    bottom=await readTelmexBottomTotals(
+      canvas,
+      p=>onProgress(Math.min(99,89+p*0.10))
+    );
 
-  if(bottom.reliable){
-    parsed.perceptions=bottom.perceptions;
-    parsed.deductions=bottom.deductions;
-    parsed.net=bottom.net;
-    parsed.totalsReliable=true;
-    parsed.totalsSource='Resumen inferior TELMEX';
-  }else{
+    if(bottom?.reliable){
+      parsed.perceptions=bottom.perceptions;
+      parsed.deductions=bottom.deductions;
+      parsed.net=bottom.net;
+      parsed.totalsReliable=true;
+      parsed.totalsSource='Resumen inferior TELMEX';
+    }else{
+      parsed.totalsReliable=false;
+      parsed.totalsSource='Reconstruido / requiere revisión';
+    }
+  }catch(err){
+    stageErrors.push(`Totales: ${err?.message||err}`);
     parsed.totalsReliable=false;
-    parsed.totalsSource='Reconstruido / requiere revisión';
-  }
-
-  // If totals OCR fails, do not invent totals from repeated/bad concepts.
-  // Keep them at zero unless a value came from the independent total reader.
-  if(!bottom.reliable){
-    parsed.perceptions=0;
-    parsed.deductions=0;
+    parsed.totalsSource='OCR de totales falló / requiere revisión';
   }
 
   parsed.ocrText=[
     normalizeOcrText(fullText),
     '',
     '--- OCR TABLA DE CONCEPTOS ---',
-    table.text||'',
+    table?.text||'',
     '',
     '--- OCR RESUMEN INFERIOR ---',
-    bottom.text||''
+    bottom?.text||'',
+    '',
+    '--- DIAGNÓSTICO ---',
+    stageErrors.length ? stageErrors.join('\n') : 'Sin errores de ejecución'
   ].join('\n');
+
+  parsed.ocrSource=[
+    parsed.ocrSource||'OCR TELMEX',
+    stageErrors.length ? `Advertencias: ${stageErrors.length}` : ''
+  ].filter(Boolean).join(' · ');
 
   onProgress(100);
   return parsed;
@@ -1220,6 +1276,7 @@ async function processPayslip(){
     }catch(err){
       payslipQueue[i].status='error';
       payslipQueue[i].error=err?.message||'No se pudo procesar';
+      console.error('FinoFinanza TELMEX OCR:',err);
     }
     renderBatchQueue();
   }
