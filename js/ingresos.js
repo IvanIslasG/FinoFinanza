@@ -725,6 +725,7 @@ function findTelmexDate(text){
 }
 
 function findTelmexPeriod(text,fileName=''){
+  if(/\b00\s*\/\s*0000\b/.test(text))return '';
   const m=text.match(/(?:Sindicalizado|Periodo|Per[ií]odo)[\s\S]{0,100}?\b(\d{1,2})\s*\/\s*(20\d{2})\b/i)
     || text.match(/\b(\d{1,2})\s*\/\s*(20\d{2})\b/);
   if(m)return `${String(Number(m[1])).padStart(2,'0')}/${m[2]}`;
@@ -795,6 +796,7 @@ function findTotalsFromText(text){
 const TELMEX_CONCEPTS=[
   {code:'03',desc:'Sueldo',kind:'percepcion'},
   {code:'12',desc:'Productividad',kind:'percepcion'},
+  {code:'17',desc:'Aguinaldo',kind:'percepcion'},
   {code:'13',desc:'Manejo',kind:'percepcion'},
   {code:'20',desc:'Ayuda renta',kind:'percepcion'},
   {code:'21',desc:'Ayuda pasajes',kind:'percepcion'},
@@ -826,49 +828,81 @@ function parseConceptsFromOcr(text){
   const lines=normalizeOcrText(text).split('\n').map(x=>x.trim()).filter(Boolean);
   const out=[];
 
+  const byCode=new Map(TELMEX_CONCEPTS.map(def=>[def.code,def]));
+
   for(const line of lines){
-    const clean=normalizeSearchText(line);
-    for(const def of TELMEX_CONCEPTS){
-      const codeRegex=new RegExp(`^\\s*${def.code.replace('.','\\.')}\\b`);
-      const descWords=normalizeSearchText(def.desc).split(' ').filter(w=>w.length>2);
-      const descHit=descWords.filter(w=>clean.includes(w)).length>=Math.min(2,descWords.length);
-      if(!codeRegex.test(line) && !descHit)continue;
+    // Prefer the printed TELMEX concept code at the beginning of the line.
+    // Example: "55 Impuesto 5,397.25 ..."
+    const codeMatch=line.match(/^\s*(\d{1,2})(?:[.,](\d))?\s+/);
+    let def=null;
+    let printedCode='';
 
-      const vals=moneyTokens(line);
-      if(!vals.length)continue;
-      let amount;
-      if(def.kind==='percepcion'){
-        amount=vals[vals.length-1];
-      }else{
-        amount=vals[0];
-      }
-      if(def.code==='99')amount=Math.abs(amount);
+    if(codeMatch){
+      printedCode=codeMatch[2] ? `${codeMatch[1]}.${codeMatch[2]}` : codeMatch[1].padStart(2,'0');
 
-      let hours=null;
-      if(/tiempo\s+ext/i.test(line)){
-        const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
-          .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
-        if(nums.length>=2)hours=nums[1];
-        else if(nums.length===1)hours=nums[0];
-      }
-
-      const uniqueCode=def.code==='95'
-        ? `${def.code}.${out.filter(c=>String(c.code).startsWith('95')).length}`
-        : def.code;
-
-      out.push({
-        code:uniqueCode,
-        description:def.desc,
-        kind:def.kind,
-        hours,
-        amount
-      });
-      break;
+      // TELMEX 95.0 / 95.1 share base definition 95.
+      def=byCode.get(printedCode) || byCode.get(codeMatch[1].padStart(2,'0')) || byCode.get(codeMatch[1]);
     }
+
+    // Only if OCR lost the code, fall back to a strong description match.
+    if(!def){
+      const clean=normalizeSearchText(line);
+      for(const candidate of TELMEX_CONCEPTS){
+        const words=normalizeSearchText(candidate.desc).split(' ').filter(w=>w.length>3);
+        if(words.length && words.every(w=>clean.includes(w))){
+          def=candidate;
+          printedCode=candidate.code;
+          break;
+        }
+      }
+    }
+
+    if(!def)continue;
+
+    const vals=moneyTokens(line);
+    if(!vals.length)continue;
+
+    let amount;
+    if(def.kind==='percepcion'){
+      // Perception amount is normally the first large money value after date/hours.
+      amount=vals[vals.length-1];
+    }else{
+      // Deduction / tax amount is the first money value in Liquidación.
+      amount=vals[0];
+    }
+
+    // For adjustment, preserve OCR sign; don't force absolute value.
+    if(def.code==='99' && !Number.isFinite(amount))continue;
+
+    let hours=null;
+    if(/tiempo\s+ext/i.test(line)){
+      const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
+        .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
+      if(nums.length>=2)hours=nums[1];
+      else if(nums.length===1)hours=nums[0];
+    }
+
+    const codeOut=printedCode || def.code;
+
+    // Avoid duplicate OCR lines for the same exact concept/value.
+    const duplicate=out.some(c=>
+      c.code===codeOut &&
+      c.description===def.desc &&
+      Math.abs(Number(c.amount||0)-Number(amount||0))<0.01
+    );
+    if(duplicate)continue;
+
+    out.push({
+      code:codeOut,
+      description:def.desc,
+      kind:def.kind,
+      hours,
+      amount
+    });
   }
+
   return out;
 }
-
 function inferSpecialTelmexDocument(text,fileName=''){
   const textNorm=normalizeSearchText(text);
   const fileNorm=normalizeSearchText(fileName);
@@ -898,7 +932,7 @@ function parseTelmexOcr(text,file){
   const clean=normalizeOcrText(text);
   const totals=findTotalsFromText(clean);
   const concepts=parseConceptsFromOcr(clean);
-  const taxConcept=concepts.find(c=>c.kind==='impuesto');
+  const taxConcept=concepts.find(c=>String(c.code).replace(/^0/,'')==='55') || concepts.find(c=>c.kind==='impuesto');
   const special=inferSpecialTelmexDocument(clean,file?.name||'');
 
   let perceptions=Number(totals.perceptions||0);
@@ -1212,6 +1246,7 @@ function renderPayslipPreview(raw){
   if(ocrSource){
     const parts=[d.ocrSource||''];
     if(d.totalsSource)parts.push(`Totales: ${d.totalsSource}`);
+    if(d.taxes>0)parts.push(`Impuesto detectado: ${money(d.taxes)}`);
     ocrSource.textContent=parts.filter(Boolean).join(' · ');
   }
   if(ocrDetails)ocrDetails.style.display=d.ocrText?'':'none';
