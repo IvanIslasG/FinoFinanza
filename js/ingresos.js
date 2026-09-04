@@ -726,38 +726,71 @@ function findTelmexDate(text){
 function findTelmexPeriod(text,fileName=''){
   const m=text.match(/(?:Sindicalizado|Periodo|Per[ií]odo)[\s\S]{0,100}?\b(\d{1,2})\s*\/\s*(20\d{2})\b/i)
     || text.match(/\b(\d{1,2})\s*\/\s*(20\d{2})\b/);
-  if(m)return `${Number(m[1])}/${m[2]}`;
+  if(m)return `${String(Number(m[1])).padStart(2,'0')}/${m[2]}`;
   const fm=String(fileName).match(/\bP(\d{1,2})\b/i);
   if(fm){
     const year=(text.match(/\b20\d{2}\b/)||[])[0]||new Date().getFullYear();
-    return `${Number(fm[1])}/${year}`;
+    return `${String(Number(fm[1])).padStart(2,'0')}/${year}`;
   }
   return '';
 }
 
 function findTotalsFromText(text){
-  const compact=text.replace(/\n/g,' ');
-  const totalMatch=compact.match(
-    /Total[\s:]*([0-9][0-9,]*\.\d{2})[\s|]+([0-9][0-9,]*\.\d{2})[\s\S]{0,60}?Neto[:\s]*([0-9][0-9,]*\.\d{2})/i
-  );
-  if(totalMatch){
-    return {
-      perceptions:parseTelmexMoney(totalMatch[1])||0,
-      deductions:parseTelmexMoney(totalMatch[2])||0,
-      net:parseTelmexMoney(totalMatch[3])||0
-    };
+  const lines=normalizeOcrText(text).split('\n').map(x=>x.trim()).filter(Boolean);
+
+  // Best case: TELMEX total row contains Percepciones + Deducciones
+  // and usually the same or following line contains Neto.
+  for(let i=0;i<lines.length;i++){
+    if(!/\btotal\b/i.test(lines[i]))continue;
+
+    const vals=moneyTokens(lines[i]).filter(v=>Math.abs(v)>=1);
+    let net=null;
+
+    const neighborhood=lines.slice(i,Math.min(lines.length,i+4)).join(' ');
+    const nm=neighborhood.match(/(?:Pago\s+Neto|Neto)[:\s$]*([0-9][0-9,]*\.\d{2})/i);
+    if(nm)net=parseTelmexMoney(nm[1]);
+
+    if(vals.length>=3){
+      // Pick a triple that satisfies percepciones - deducciones = neto.
+      for(let a=0;a<vals.length-2;a++){
+        for(let b=a+1;b<vals.length-1;b++){
+          for(let c=b+1;c<vals.length;c++){
+            if(Math.abs((vals[a]-vals[b])-vals[c])<0.05){
+              return {perceptions:vals[a],deductions:vals[b],net:vals[c]};
+            }
+          }
+        }
+      }
+    }
+
+    if(vals.length>=2 && Number.isFinite(net)){
+      const p=vals[0],d=vals[1];
+      if(Math.abs((p-d)-net)<1){
+        return {perceptions:p,deductions:d,net};
+      }
+    }
   }
 
-  const netMatch=compact.match(/(?:Pago\s+Neto|Neto)[:\s]*\$?\s*([0-9][0-9,]*\.\d{2})/i);
-  let perceptions=0,deductions=0;
-  const perceptionsMatch=compact.match(/Percepciones[\s\S]{0,70}?\$?\s*([0-9][0-9,]*\.\d{2})/i);
-  const deductionsMatch=compact.match(/Deducciones[\s\S]{0,70}?\$?\s*([0-9][0-9,]*\.\d{2})/i);
-  if(perceptionsMatch)perceptions=parseTelmexMoney(perceptionsMatch[1])||0;
-  if(deductionsMatch)deductions=parseTelmexMoney(deductionsMatch[1])||0;
-  const net=netMatch?parseTelmexMoney(netMatch[1])||0:0;
-  return {perceptions,deductions,net};
-}
+  // Search a larger neighborhood around "Pago Neto" / "Neto".
+  const joined=lines.join(' ');
+  const netMatch=joined.match(/(?:Pago\s+Neto|Neto)[:\s$]*([0-9][0-9,]*\.\d{2})/i);
+  const net=netMatch?parseTelmexMoney(netMatch[1]):0;
 
+  // Bottom summary commonly reads:
+  // Percepciones 11,157.79 Deducciones 8,380.79 ... Pago Neto 2,777.00
+  const summary=joined.match(
+    /Percepciones[\s\S]{0,90}?([0-9][0-9,]*\.\d{2})[\s\S]{0,90}?Deducciones[\s\S]{0,90}?([0-9][0-9,]*\.\d{2})/i
+  );
+  if(summary){
+    const p=parseTelmexMoney(summary[1])||0;
+    const d=parseTelmexMoney(summary[2])||0;
+    if(net && Math.abs((p-d)-net)<1){
+      return {perceptions:p,deductions:d,net};
+    }
+  }
+
+  return {perceptions:0,deductions:0,net};
+}
 const TELMEX_CONCEPTS=[
   {code:'03',desc:'Sueldo',kind:'percepcion'},
   {code:'12',desc:'Productividad',kind:'percepcion'},
@@ -767,6 +800,8 @@ const TELMEX_CONCEPTS=[
   {code:'22',desc:'Ayuda despensa',kind:'percepcion'},
   {code:'23',desc:'Tiempo ext doble',kind:'percepcion'},
   {code:'24',desc:'Indem dia descanso',kind:'percepcion'},
+  {code:'38',desc:'Ahorro acumulado',kind:'percepcion'},
+  {code:'39',desc:'Premio del Ahorro',kind:'percepcion'},
   {code:'51',desc:'Ahorro 11.53%',kind:'ahorro'},
   {code:'53',desc:'Cuotas sindicales',kind:'deduccion'},
   {code:'54',desc:'Seguro sindicato',kind:'deduccion'},
@@ -806,6 +841,7 @@ function parseConceptsFromOcr(text){
       }else{
         amount=vals[0];
       }
+      if(def.code==='99')amount=Math.abs(amount);
 
       let hours=null;
       if(/tiempo\s+ext/i.test(line)){
@@ -834,21 +870,56 @@ function parseConceptsFromOcr(text){
 }
 
 function inferSpecialTelmexDocument(text,fileName=''){
-  const t=normalizeSearchText(`${fileName} ${text}`);
-  if(t.includes('gastos educacionales'))return {documentType:'Nómina extraordinaria',extraordinary:true};
-  if(t.includes('aguinaldo'))return {documentType:'Nómina extraordinaria',extraordinary:true};
-  if(t.includes('premio del ahorro')||/\bahorro\b/.test(t)&&t.includes('acumulado')){
+  const textNorm=normalizeSearchText(text);
+  const fileNorm=normalizeSearchText(fileName);
+
+  if(fileNorm.includes('gastos educ') || textNorm.includes('gastos educacionales')){
+    return {documentType:'Nómina extraordinaria',extraordinary:true};
+  }
+
+  if(fileNorm.includes('aguinaldo') || textNorm.includes('anticipo aguinaldo')){
+    return {documentType:'Nómina extraordinaria',extraordinary:true};
+  }
+
+  // "Premio del Ahorro" and "Ahorro acumulado" also occur as concepts
+  // in ordinary weekly payslips. Do not classify a weekly Pxx as Ahorro
+  // from those concepts alone.
+  const looksWeekly=/^p\d{1,2}(?:\D|$)/i.test(String(fileName||'').trim());
+  const explicitSavingsFile=fileNorm.includes('ahorro');
+  const explicitSavingsTitle=/dep[oó]sito\s+en\s+banco[\s_-]*ahorro/i.test(text);
+
+  if(!looksWeekly && (explicitSavingsFile || explicitSavingsTitle)){
     return {documentType:'Ahorro',extraordinary:true};
   }
+
   return {documentType:'Nómina semanal',extraordinary:false};
 }
-
 function parseTelmexOcr(text,file){
   const clean=normalizeOcrText(text);
   const totals=findTotalsFromText(clean);
   const concepts=parseConceptsFromOcr(clean);
   const taxConcept=concepts.find(c=>c.kind==='impuesto');
   const special=inferSpecialTelmexDocument(clean,file?.name||'');
+
+  let perceptions=Number(totals.perceptions||0);
+  let deductions=Number(totals.deductions||0);
+  let net=Number(totals.net||0);
+
+  if(!(perceptions>0) || !(deductions>0) || !(net>0)){
+    const conceptPerceptions=concepts
+      .filter(c=>c.kind==='percepcion')
+      .reduce((s,c)=>s+Number(c.amount||0),0);
+
+    const conceptDeductions=concepts
+      .filter(c=>['deduccion','impuesto','ahorro'].includes(c.kind))
+      .reduce((s,c)=>s+Number(c.amount||0),0);
+
+    if(!(perceptions>0) && conceptPerceptions>0)perceptions=conceptPerceptions;
+    if(!(deductions>0) && conceptDeductions>0)deductions=conceptDeductions;
+
+    const calculated=perceptions-deductions;
+    if(!(net>0) && calculated>0)net=calculated;
+  }
 
   const salaryMatch=clean.replace(/\n/g,' ').match(/Salario\s+diario[\s\S]{0,50}?([0-9][0-9,]*\.\d{2})/i);
   const daysMatch=clean.replace(/\n/g,' ').match(/D[ií]as\s+Periodo[\s\S]{0,30}?(\d{1,2})\b/i);
@@ -862,10 +933,10 @@ function parseTelmexOcr(text,file){
     period:findTelmexPeriod(clean,file?.name||''),
     periodDays:daysMatch?Number(daysMatch[1]):0,
     dailySalary:salaryMatch?parseTelmexMoney(salaryMatch[1])||0:0,
-    perceptions:totals.perceptions,
-    deductions:totals.deductions,
+    perceptions,
+    deductions,
     taxes:taxConcept?.amount||0,
-    net:totals.net,
+    net,
     extraordinary:special.extraordinary,
     parserProfile:'telmex-local-ocr',
     concepts,
