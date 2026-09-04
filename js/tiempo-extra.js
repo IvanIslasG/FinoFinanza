@@ -123,6 +123,56 @@ function initWeek(){
   setExpectedPay();
   buildWeek();
 }
+
+function hasWeekCaptureContent(){
+  return currentWeek.some((row,index)=>
+    (row.end||'').trim() ||
+    (row.start2||'').trim() ||
+    (row.end2||'').trim() ||
+    (row.activity||'').trim() ||
+    row.minutes>0 ||
+    ((row.start||'').trim() && !(index<5 && row.start==='16:00'))
+  );
+}
+
+function resetWeekCapture(){
+  if(hasWeekCaptureContent()){
+    const ok=confirm('Se borrará la captura actual que aún no hayas guardado. ¿Deseas iniciar una nueva captura?');
+    if(!ok)return;
+  }
+
+  initWeek();
+
+  const btn=document.getElementById('newWeekCaptureBtn');
+  if(btn){
+    const original=btn.innerHTML;
+    btn.innerHTML='✓ Captura limpia';
+    btn.disabled=true;
+    setTimeout(()=>{
+      btn.innerHTML=original;
+      btn.disabled=false;
+    },1200);
+  }
+}
+
+function ensureNewWeekCaptureButton(){
+  if(document.getElementById('newWeekCaptureBtn'))return;
+
+  const payInput=document.getElementById('weekPayDate');
+  if(!payInput)return;
+
+  const toolbar=payInput.closest('.week-toolbar') || payInput.parentElement?.parentElement;
+  if(!toolbar)return;
+
+  const btn=document.createElement('button');
+  btn.type='button';
+  btn.id='newWeekCaptureBtn';
+  btn.className='te-new-capture-btn';
+  btn.innerHTML='↻ Nueva captura';
+  btn.title='Limpiar el formulario e iniciar una nueva captura';
+  btn.addEventListener('click',resetWeekCapture);
+  toolbar.appendChild(btn);
+}
 function buildWeek(){
   const value=document.getElementById('weekStart').value;
   if(!value)return;
@@ -243,9 +293,7 @@ function pendingMinutesForWeek(week){
 function paymentStatusForWeek(week){
   const total=Math.max(0,Number(week.total||0));
   const paid=paidMinutesForWeek(week);
-  if(total<=0){
-    return week.status==='Vacaciones' ? 'Vacaciones' : 'Sin Tiempo Extra';
-  }
+  if(total<=0)return week.status||'Borrador';
   if(paid<=0)return 'Pendiente de pago';
   if(paid<total)return 'Pago parcial';
   if(paid===total)return 'Pagado completo';
@@ -258,8 +306,6 @@ function paymentStatusClass(status){
   if(normalized==='pagado completo')return 'te-status-green';
   if(normalized==='pago parcial')return 'te-status-amber';
   if(normalized==='pendiente de pago')return 'te-status-amber';
-  if(normalized==='sin tiempo extra')return 'te-status-neutral';
-  if(normalized==='vacaciones')return 'te-status-blue';
   if(normalized==='revisar diferencia')return 'te-status-red';
   if(normalized==='con diferencia')return 'te-status-red';
 
@@ -402,13 +448,6 @@ function ensureReconciliationUI(){
       .te-recon-form{display:grid;grid-template-columns:180px minmax(220px,1fr) auto;gap:10px;align-items:end;padding:14px 16px}
       .te-recon-form .field input{height:36px}
       .te-recon-form .te-tool-btn{height:34px;margin-bottom:1px}
-      .te-paid-input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}
-      .te-paid-input-row input{min-width:0}
-      .te-paid-all-btn{
-        height:36px;border:1px solid #abefc6;background:#ecfdf3;color:#067647;border-radius:9px;
-        padding:0 10px;font-size:11px;font-weight:800;cursor:pointer;white-space:nowrap
-      }
-      .te-paid-all-btn:hover{background:#dcfae6;border-color:#75e0a7}
       .te-recon-future{padding:0 16px 14px;color:#98a2b3;font-size:10px;line-height:1.4}
       @media(max-width:760px){.te-recon-grid{grid-template-columns:repeat(2,1fr)}.te-recon-form{grid-template-columns:1fr}}
     `;
@@ -433,13 +472,7 @@ function renderReconciliation(week){
       <div><span>Estado</span><strong>${status}</strong></div>
     </div>
     <div class="te-recon-form">
-      <div class="field">
-        <label>Horas pagadas</label>
-        <div class="te-paid-input-row">
-          <input id="reconPaidHours" type="text" inputmode="decimal" value="${hhmm(paid)}" placeholder="Ej. 09:30">
-          <button class="te-paid-all-btn" id="markAllPaidBtn" type="button" title="Marcar todas las horas como pagadas">Pagado</button>
-        </div>
-      </div>
+      <div class="field"><label>Horas pagadas</label><input id="reconPaidHours" type="text" inputmode="decimal" value="${hhmm(paid)}" placeholder="Ej. 09:30"><div class="mini-hint">Acepta HH:MM o decimal. Ejemplo: 9.5 = 09:30.</div></div>
       <div class="field"><label>Nota</label><input id="reconNote" type="text" value="${String(week.paymentNote||'').replace(/"/g,'&quot;')}" placeholder="Ej. faltaron 3 horas"></div>
       <button class="te-tool-btn" id="saveReconciliationBtn" type="button">Guardar conciliación</button>
     </div>
@@ -451,13 +484,6 @@ function renderReconciliation(week){
   });
   paidInput?.addEventListener('click',()=>{
     paidInput.select();
-  });
-
-  document.getElementById('markAllPaidBtn')?.addEventListener('click',async()=>{
-    if(paidInput){
-      paidInput.value=hhmm(week.total||0);
-    }
-    await saveManualReconciliation(week.id);
   });
 
   document.getElementById('saveReconciliationBtn')?.addEventListener('click',()=>saveManualReconciliation(week.id));
@@ -757,8 +783,6 @@ function ensureSavedWeeksBulkUI(){
       .te-status-red .te-status-dot{background:#f04438}
       .te-status-neutral{background:#f2f4f7!important;color:#475467!important;border-color:#e4e7ec!important}
       .te-status-neutral .te-status-dot{background:#98a2b3}
-      .te-status-blue{background:#eff8ff!important;color:#175cd3!important;border-color:#b2ddff!important}
-      .te-status-blue .te-status-dot{background:#2e90fa}
       .te-icon-action{
         width:28px;height:28px;border:1px solid #e4e7ec;background:#fff;border-radius:7px;
         display:inline-grid;place-items:center;padding:0;font-size:13px;cursor:pointer;line-height:1
@@ -986,57 +1010,14 @@ function openWeekView(id){
   panel.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-
-function ensureZeroHourStatusOptions(){
-  const select=document.getElementById('editStatus');
-  if(!select)return;
-
-  const options=[
-    ['Sin Tiempo Extra','Sin Tiempo Extra'],
-    ['Vacaciones','Vacaciones']
-  ];
-
-  options.forEach(([value,label])=>{
-    if(![...select.options].some(option=>option.value===value)){
-      const option=document.createElement('option');
-      option.value=value;
-      option.textContent=label;
-      select.appendChild(option);
-    }
-  });
-}
-
 function openEditor(id){
   const w=savedWeekData.find(x=>x.id===id);
   if(!w)return;
   editingId=id;
-  ensureZeroHourStatusOptions();
   document.getElementById('editPeriod').value=w.periodo||'';
   document.getElementById('editReport').value=w.report||'';
   document.getElementById('editPay').value=w.pay||'';
-  const editStatusSelect=document.getElementById('editStatus');
-  const derivedStatus=paymentStatusForWeek(w);
-
-  if(Number(w.total||0)<=0){
-    editStatusSelect.disabled=false;
-    editStatusSelect.title='Selecciona si fue una semana sin tiempo extra o de vacaciones';
-
-    [...editStatusSelect.options].forEach(option=>{
-      option.disabled=!['Sin Tiempo Extra','Vacaciones'].includes(option.value);
-    });
-
-    editStatusSelect.value=
-      w.status==='Vacaciones'
-        ? 'Vacaciones'
-        : 'Sin Tiempo Extra';
-  }else{
-    [...editStatusSelect.options].forEach(option=>option.disabled=false);
-
-    // En semanas con horas el estado depende de la conciliación de pago.
-    editStatusSelect.value=derivedStatus;
-    editStatusSelect.disabled=true;
-    editStatusSelect.title='Este estado se calcula automáticamente según las horas pagadas';
-  }
+  document.getElementById('editStatus').value=w.status||'Borrador';
 
   const box=document.getElementById('editorDays');
   box.innerHTML='';
@@ -1101,31 +1082,16 @@ async function saveEdit(){
   });
   entries.forEach(r=>{ r.minutes=totalEntryMinutes(r); });
 
-  const editedTotal=entries.reduce((s,r)=>s+r.minutes,0);
-  const selectedStatus=document.getElementById('editStatus').value;
-
-  const updatedWeek={
+  await putItem({
     ...w,
     periodo:document.getElementById('editPeriod').value,
     report:document.getElementById('editReport').value,
     pay:document.getElementById('editPay').value,
+    status:document.getElementById('editStatus').value,
     entries,
-    total:editedTotal,
+    total:entries.reduce((s,r)=>s+r.minutes,0),
     updatedAt:new Date().toISOString()
-  };
-
-  if(editedTotal<=0){
-    updatedWeek.status=
-      selectedStatus==='Vacaciones'
-        ? 'Vacaciones'
-        : 'Sin Tiempo Extra';
-  }else{
-    // Para semanas con horas, conservar la conciliación y dejar que
-    // paymentStatusForWeek determine el estado mostrado.
-    updatedWeek.status=w.status||'';
-  }
-
-  await putItem(updatedWeek);
+  });
 
   await loadSavedWeeks();
   document.getElementById('weekEditor').classList.remove('show');
@@ -1829,30 +1795,45 @@ function ensureSecondIntervalStyles(){
       min-width:0
     }
     .te-editor-slot input{min-width:0;width:100%}
-  `;
-  document.head.appendChild(style);
-}
-
-
-function ensureEditorStatusStyles(){
-  if(document.getElementById('teEditorStatusStyle'))return;
-  const style=document.createElement('style');
-  style.id='teEditorStatusStyle';
-  style.textContent=`
-    #editStatus:disabled{
-      background:#f8fafc;
-      color:#667085;
-      cursor:not-allowed;
-      opacity:1
+    .te-new-capture-btn{
+      align-self:end;
+      min-height:42px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      padding:0 15px;
+      border:1px solid #d0d5dd;
+      border-radius:10px;
+      background:#fff;
+      color:#344054;
+      font-size:11px;
+      font-weight:800;
+      white-space:nowrap;
+      cursor:pointer;
+      transition:.15s ease;
+    }
+    .te-new-capture-btn:hover{
+      border-color:#84adff;
+      background:#f5f8ff;
+      color:#155eef;
+      transform:translateY(-1px);
+    }
+    .te-new-capture-btn:disabled{
+      opacity:.7;
+      cursor:default;
+      transform:none;
+    }
+    @media(max-width:900px){
+      .te-new-capture-btn{width:100%}
     }
   `;
   document.head.appendChild(style);
 }
 
 export async function initTiempoExtra(){
-  ensureEditorStatusStyles();
-  ensureZeroHourStatusOptions();
   ensureSecondIntervalStyles();
+  ensureNewWeekCaptureButton();
   ensureReconciliationUI();
   setTimeout(ensureSavedWeeksCollapsible,0);
   setTimeout(ensurePaymentColumns,0);
