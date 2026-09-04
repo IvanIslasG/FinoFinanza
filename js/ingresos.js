@@ -270,7 +270,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.4 · IA privada</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.5 · validación financiera</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -608,26 +608,30 @@ function validationState(d){
   const p=Number(d.perceptions||0);
   const de=Number(d.deductions||0);
   const n=Number(d.net||0);
+  const taxes=Number(d.taxes||0);
   const calc=p-de;
 
   if(!d.paymentDate)return 'review';
 
   const documentType=String(d.documentType||'').toLowerCase();
-  const isExtraordinary=Boolean(d.extraordinary) ||
+  const isExtraordinary=
+    Boolean(d.extraordinary) ||
     documentType.includes('extraordinaria') ||
+    documentType.includes('aguinaldo') ||
+    documentType.includes('educacional') ||
     documentType==='ahorro';
 
-  // Los volantes ordinarios sí requieren periodo.
-  // Los extraordinarios TELMEX pueden traer 00/0000 y se guardan sin periodo.
-  if(!isExtraordinary && !d.period)return 'review';
+  if(!isExtraordinary && !String(d.period||'').trim())return 'review';
 
-  if(!(p>0)||!(de>=0)||!(n>=0))return 'review';
+  if(!(p>0))return 'review';
+  if(!(de>=0))return 'review';
+  if(!(n>=0))return 'review';
 
-  const source=String(d.totalsSource||'');
-  const reliable=Boolean(d.totalsReliable) ||
-    /resumen inferior telmex|celdas independientes|ia fallback|totales impresos/i.test(source);
-  if(!reliable)return 'review';
-  return Math.abs(calc-n)<=0.05?'valid':'review';
+  if(taxes<0 || taxes>de+0.05)return 'review';
+
+  if(Math.abs(calc-n)>0.05)return 'review';
+
+  return 'valid';
 }
 
 function renderBatchQueue(){
