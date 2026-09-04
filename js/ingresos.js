@@ -17,6 +17,9 @@ let telmexOcrWorker=null;
 const PDFJS_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
 const PDFJS_WORKER_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 const TESSERACT_CDN='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const AI_ENDPOINT_STORAGE_KEY='finoFinanza.aiFallbackEndpoint';
+const AI_FALLBACK_VERSION='1.0';
+
 
 const P39_DEMO={
   person:'Ivan',
@@ -195,6 +198,14 @@ function injectIncomeStyles(){
     #ingresos .income-ocr-details summary{cursor:pointer;padding:8px 10px;font-size:10px;font-weight:800;color:#475467}
     #ingresos .income-ocr-text{margin:0;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font:10px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:#475467;border-top:1px solid var(--line)}
     #ingresos .income-ocr-source{font-size:9px;color:#667085;margin-top:5px}
+    #ingresos .income-ai-panel{margin-top:10px;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fcfcfd}
+    #ingresos .income-ai-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #ingresos .income-ai-note{font-size:9px;color:#667085;line-height:1.45;margin-top:6px}
+    #ingresos .income-ai-btn{border:1px solid #c7d7fe;background:#eef4ff;color:#3538cd;border-radius:9px;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer}
+    #ingresos .income-ai-btn:disabled{opacity:.55;cursor:not-allowed}
+    #ingresos .income-ai-config{display:flex;gap:6px;align-items:center;flex:1;min-width:260px}
+    #ingresos .income-ai-config input{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-size:10px}
+
     
     #ingresos .income-preview-empty{border:1px dashed var(--line);border-radius:12px;padding:30px 16px;text-align:center;color:var(--muted);font-size:12px}
     #ingresos .income-preview{display:none}
@@ -258,7 +269,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.1</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.2 · IA fallback</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -425,6 +436,16 @@ function renderIncomeShell(){
                   </div>
                   <div class="income-validation" id="previewValidation">—</div>
                   <div class="income-ocr-source" id="previewOcrSource"></div>
+                  <div class="income-ai-panel" id="incomeAiPanel" style="display:none">
+                    <div class="income-ai-row">
+                      <button class="income-ai-btn" id="incomeAiAnalyzeBtn" type="button">✦ Analizar con IA</button>
+                      <div class="income-ai-config">
+                        <input id="incomeAiEndpoint" type="url" placeholder="Endpoint seguro de IA">
+                        <button class="income-btn" id="incomeAiSaveEndpoint" type="button">Guardar endpoint</button>
+                      </div>
+                    </div>
+                    <div class="income-ai-note" id="incomeAiNote">La IA solo se usará como respaldo para volantes que el OCR local no pueda validar.</div>
+                  </div>
                   <details class="income-ocr-details" id="previewOcrDetails" style="display:none">
                     <summary>Ver texto detectado</summary>
                     <pre class="income-ocr-text" id="previewOcrText"></pre>
@@ -1442,6 +1463,158 @@ function normalizePayslipData(raw,file=null){
     updatedAt:new Date().toISOString()
   };
 }
+
+function getAiFallbackEndpoint(){
+  return localStorage.getItem(AI_ENDPOINT_STORAGE_KEY)||'';
+}
+
+function setAiFallbackEndpoint(value){
+  const endpoint=String(value||'').trim();
+  if(endpoint)localStorage.setItem(AI_ENDPOINT_STORAGE_KEY,endpoint);
+  else localStorage.removeItem(AI_ENDPOINT_STORAGE_KEY);
+  return endpoint;
+}
+
+function aiResultLooksValid(data){
+  if(!data || typeof data!=='object')return false;
+  const p=Number(data.perceptions??data.total_percepciones??0);
+  const d=Number(data.deductions??data.total_deducciones??0);
+  const n=Number(data.net??data.neto??0);
+  if(!(p>0) || !(d>=0) || !(n>=0))return false;
+  return Math.abs((p-d)-n)<0.05;
+}
+
+async function pdfFirstPageAsJpeg(file){
+  const pdfjs=await ensurePdfJs();
+  const bytes=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data:bytes}).promise;
+  const page=await pdf.getPage(1);
+  const viewport=page.getViewport({scale:1.65});
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d');
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  await page.render({canvasContext:ctx,viewport}).promise;
+  return canvas.toDataURL('image/jpeg',0.88);
+}
+
+function buildAiFallbackPrompt(item){
+  const d=item?.data||{};
+  return {
+    task:'read_mexican_payroll_payslip',
+    schemaVersion:AI_FALLBACK_VERSION,
+    person:d.person||'Ivan',
+    employer:d.source||'TELMEX',
+    fileName:item?.file?.name||d.fileName||'',
+    knownDocumentType:d.documentType||'',
+    ocrText:d.ocrText||'',
+    instructions:[
+      'Read only values visible in the payslip image.',
+      'Do not infer missing financial amounts.',
+      'Return numbers as decimals without currency symbols.',
+      'Taxes are a subset of deductions and must also be returned separately.',
+      'For TELMEX preserve printed concept codes and descriptions.',
+      'If Periodo is 00/0000, return an empty period.',
+      'Return JSON only.'
+    ],
+    expectedSchema:{
+      paymentDate:'YYYY-MM-DD',
+      period:'string or empty',
+      documentType:'string',
+      extraordinary:'boolean',
+      perceptions:'number',
+      deductions:'number',
+      taxes:'number',
+      net:'number',
+      concepts:[{
+        code:'string',
+        description:'string',
+        kind:'percepcion|deduccion|impuesto|ahorro',
+        hours:'number|null',
+        amount:'number'
+      }],
+      confidence:'number 0..1',
+      notes:'string'
+    }
+  };
+}
+
+async function analyzeCurrentPayslipWithAi(){
+  if(currentPayslipQueueIndex===null || !payslipQueue[currentPayslipQueueIndex]){
+    toast('Abre primero un volante para revisarlo.','warn');
+    return;
+  }
+
+  const item=payslipQueue[currentPayslipQueueIndex];
+  const endpoint=getAiFallbackEndpoint();
+
+  if(!endpoint){
+    toast('Configura primero el endpoint seguro de IA.','warn');
+    document.getElementById('incomeAiEndpoint')?.focus();
+    return;
+  }
+
+  const btn=document.getElementById('incomeAiAnalyzeBtn');
+  const note=document.getElementById('incomeAiNote');
+  btn.disabled=true;
+  btn.textContent='Analizando…';
+  if(note)note.textContent='Preparando la primera página y enviándola al fallback de IA…';
+
+  try{
+    const imageDataUrl=await pdfFirstPageAsJpeg(item.file);
+    const payload={...buildAiFallbackPrompt(item),imageDataUrl};
+
+    const response=await fetch(endpoint,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+
+    const raw=await response.json();
+    const result=raw?.data||raw?.result||raw;
+    if(!result || typeof result!=='object')throw new Error('Respuesta de IA inválida.');
+
+    const merged=normalizePayslipData({
+      ...item.data,
+      ...result,
+      person:item.data?.person||'Ivan',
+      source:item.data?.source||'TELMEX',
+      parserProfile:'telmex-ai-fallback',
+      fileName:item.file?.name||item.data?.fileName||'',
+      ocrText:item.data?.ocrText||'',
+      ocrSource:`IA fallback · ${item.data?.ocrSource||'OCR local'}`,
+      totalsReliable:aiResultLooksValid(result),
+      totalsSource:'IA fallback'
+    },item.file);
+
+    item.data=merged;
+    item.status=validationState(merged);
+    item.error=null;
+    renderBatchQueue();
+    renderPayslipPreview(merged);
+
+    if(note){
+      note.textContent=item.status==='valid'
+        ? '✓ La IA reconstruyó el volante y los totales cuadran.'
+        : 'La IA devolvió datos, pero el volante aún requiere revisión.';
+    }
+
+    toast(
+      item.status==='valid' ? 'Volante analizado y validado con IA.' : 'La IA terminó, pero el volante sigue en revisión.',
+      item.status==='valid' ? 'ok' : 'warn'
+    );
+  }catch(err){
+    console.error('FinoFinanza AI fallback:',err);
+    if(note)note.textContent=`Error del fallback de IA: ${err?.message||err}`;
+    toast('No se pudo completar el análisis con IA.','error');
+  }finally{
+    btn.disabled=false;
+    btn.textContent='✦ Analizar con IA';
+  }
+}
+
 function renderPayslipPreview(raw){
   currentPayslipPreview=normalizePayslipData(raw);
   const d=currentPayslipPreview;
@@ -1471,6 +1644,14 @@ function renderPayslipPreview(raw){
 
   const calc=d.perceptions-d.deductions;
   const ok=Math.abs(calc-d.net)<0.02;
+
+  const aiPanel=document.getElementById('incomeAiPanel');
+  const aiEndpointInput=document.getElementById('incomeAiEndpoint');
+  if(aiEndpointInput)aiEndpointInput.value=getAiFallbackEndpoint();
+  if(aiPanel){
+    const queueItem=currentPayslipQueueIndex!==null ? payslipQueue[currentPayslipQueueIndex] : null;
+    aiPanel.style.display=queueItem?.status==='review' ? '' : 'none';
+  }
   const val=document.getElementById('previewValidation');
   const trulyValid=ok && d.totalsReliable;
   val.className='income-validation '+(trulyValid?'ok':'warn');
@@ -1748,6 +1929,14 @@ function bindIncomeEvents(){
     toast('Ejemplo P39 cargado. Revisa y guarda cuando quieras.');
   });
   document.getElementById('savePayslipBtn').addEventListener('click',savePayslip);
+
+  document.getElementById('incomeAiSaveEndpoint')?.addEventListener('click',()=>{
+    const value=document.getElementById('incomeAiEndpoint')?.value||'';
+    const saved=setAiFallbackEndpoint(value);
+    toast(saved?'Endpoint de IA guardado.':'Endpoint de IA eliminado.',saved?'ok':'warn');
+  });
+
+  document.getElementById('incomeAiAnalyzeBtn')?.addEventListener('click',analyzeCurrentPayslipWithAi);
 
   ['incomeSearch','incomeFilterPerson','incomeFilterKind','incomeFilterMonth'].forEach(id=>{
     const el=document.getElementById(id);
