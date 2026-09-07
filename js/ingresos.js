@@ -249,9 +249,46 @@ function injectIncomeStyles(){
     #ingresos .income-table th.sortable:hover{background:#eef4ff;color:#175cd3}
     #ingresos .income-table th.active-sort{background:#eef4ff;color:#175cd3}
     #ingresos .sort-arrow{margin-left:5px;font-size:9px}
-    #ingresos .income-date-range{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    #ingresos .income-date-range{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      gap:6px;
+      min-width:0
+    }
+    #ingresos .income-filters>*{min-width:0;width:100%}
+    #ingresos .income-filters input,
+    #ingresos .income-filters select{max-width:100%;min-width:0;box-sizing:border-box}
+    #ingresos .income-date-range input{width:100%;min-width:0;box-sizing:border-box}
 
-    #ingresos .income-filters{display:grid;grid-template-columns:minmax(180px,1fr) repeat(4,minmax(120px,.45fr));gap:8px;margin-bottom:10px}
+    @media(max-width:1180px){
+      #ingresos .income-filters{
+        grid-template-columns:minmax(220px,1.5fr) repeat(2,minmax(150px,1fr));
+      }
+      #ingresos .income-date-range{grid-column:span 2}
+    }
+    @media(max-width:820px){
+      #ingresos .income-filters{
+        grid-template-columns:1fr 1fr;
+      }
+      #ingresos .income-filters #incomeSearch{grid-column:1/-1}
+      #ingresos .income-date-range{grid-column:1/-1}
+    }
+    @media(max-width:560px){
+      #ingresos .income-filters{grid-template-columns:1fr}
+      #ingresos .income-filters #incomeSearch,
+      #ingresos .income-date-range{grid-column:auto}
+      #ingresos .income-date-range{grid-template-columns:1fr}
+    }
+
+    #ingresos .income-filters{
+      display:grid;
+      grid-template-columns:minmax(220px,1.6fr) repeat(3,minmax(150px,1fr)) minmax(260px,1.25fr);
+      gap:8px;
+      margin-bottom:10px;
+      width:100%;
+      min-width:0;
+      align-items:center
+    }
     #ingresos .income-filters input,#ingresos .income-filters select{width:100%;border:1px solid var(--line);border-radius:9px;padding:8px 9px;font-size:11px;background:#fff}
     #ingresos .income-summary{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:11px;color:#667085}
     #ingresos .income-summary strong{color:#101828;font-size:13px}
@@ -473,7 +510,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.9 · impuesto normalizado</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.10 · historial responsive</span></p>
       </div>
     </div>
     <div class="income-shell">
