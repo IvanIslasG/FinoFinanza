@@ -113,7 +113,7 @@ function setExpectedPay(){
     secondSaturdayAfter(document.getElementById('weekReportDate').value);
 }
 
-function initWeek(){
+function initWeek(preserveCapture=false){
   const monday=nearestMonday(new Date());
   document.getElementById('weekStart').value=toInputDate(monday);
   document.getElementById('weekPeriod').value=isoWeekNumber(monday);
@@ -121,7 +121,7 @@ function initWeek(){
   report.setDate(monday.getDate()+7);
   document.getElementById('weekReportDate').value=toInputDate(report);
   setExpectedPay();
-  buildWeek();
+  buildWeek(preserveCapture);
 }
 
 function hasWeekCaptureContent(){
@@ -141,7 +141,7 @@ function resetWeekCapture(){
     if(!ok)return;
   }
 
-  initWeek();
+  initWeek(false);
 
   const btn=document.getElementById('newWeekCaptureBtn');
   if(btn){
@@ -173,12 +173,25 @@ function ensureNewWeekCaptureButton(){
   btn.addEventListener('click',resetWeekCapture);
   toolbar.appendChild(btn);
 }
-function buildWeek(){
+function escapeTEText(value=''){
+  return String(value).replace(/[&<>"']/g,ch=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+}
+
+function buildWeek(preserveCapture=true){
   const value=document.getElementById('weekStart').value;
   if(!value)return;
+
   const monday=nearestMonday(new Date(value+'T12:00:00'));
   document.getElementById('weekStart').value=toInputDate(monday);
   document.getElementById('weekPeriod').value=isoWeekNumber(monday);
+
+  // Al cambiar la fecha conservamos la captura por posición:
+  // lunes sigue siendo lunes, martes sigue siendo martes, etc.
+  const previous=preserveCapture
+    ? currentWeek.map(row=>({...row}))
+    : [];
 
   currentWeek=[];
   const grid=document.getElementById('weekGrid');
@@ -188,29 +201,54 @@ function buildWeek(){
     const d=new Date(monday);
     d.setDate(monday.getDate()+i);
     const date=toInputDate(d);
-    currentWeek.push({date,start:i<5?'16:00':'',end:'',start2:'',end2:'',activity:'',minutes:0});
 
+    const old=previous[i];
+    const row=old
+      ? {
+          ...old,
+          date
+        }
+      : {
+          date,
+          start:i<5?'16:00':'',
+          end:'',
+          start2:'',
+          end2:'',
+          activity:'',
+          minutes:0
+        };
+
+    row.start=row.start||'';
+    row.end=row.end||'';
+    row.start2=row.start2||'';
+    row.end2=row.end2||'';
+    row.activity=row.activity||'';
+    row.minutes=totalEntryMinutes(row);
+
+    currentWeek.push(row);
+
+    const hasSecond=Boolean(row.start2||row.end2);
     const card=document.createElement('div');
     card.className='day-card';
     card.innerHTML=`
       <div class="dow">${dayNames[i]}</div>
       <div class="date">${formatDateEs(date)}</div>
-      <input type="time" data-i="${i}" data-f="start" value="${i<5?'16:00':''}">
-      <input type="time" data-i="${i}" data-f="end">
-      <button type="button" class="te-add-slot" data-add-slot="${i}">＋ Segundo horario</button>
-      <div class="te-second-slot" id="second-slot-${i}" style="display:none">
+      <input type="time" data-i="${i}" data-f="start" value="${escapeTEText(row.start)}">
+      <input type="time" data-i="${i}" data-f="end" value="${escapeTEText(row.end)}">
+      <button type="button" class="te-add-slot" data-add-slot="${i}" style="${hasSecond?'display:none':''}">＋ Segundo horario</button>
+      <div class="te-second-slot" id="second-slot-${i}" style="display:${hasSecond?'grid':'none'}">
         <div class="te-second-field">
           <small>Inicio 2</small>
-          <input type="time" data-i="${i}" data-f="start2">
+          <input type="time" data-i="${i}" data-f="start2" value="${escapeTEText(row.start2)}">
         </div>
         <div class="te-second-field">
           <small>Fin 2</small>
-          <input type="time" data-i="${i}" data-f="end2">
+          <input type="time" data-i="${i}" data-f="end2" value="${escapeTEText(row.end2)}">
         </div>
         <button type="button" class="te-remove-slot" data-remove-slot="${i}" title="Quitar segundo horario" aria-label="Quitar segundo horario">×</button>
       </div>
-      <textarea data-i="${i}" data-f="activity" placeholder="Actividad"></textarea>
-      <div class="hours" id="hours-${i}">00:00</div>`;
+      <textarea data-i="${i}" data-f="activity" placeholder="Actividad">${escapeTEText(row.activity)}</textarea>
+      <div class="hours" id="hours-${i}">${hhmm(row.minutes)}</div>`;
     grid.appendChild(card);
   }
 
@@ -1840,7 +1878,7 @@ export async function initTiempoExtra(){
   setTimeout(ensureSavedWeeksBulkUI,0);
   createImportUI();
   document.getElementById('weekReportDate').addEventListener('change',setExpectedPay);
-  document.getElementById('weekStart').addEventListener('change',buildWeek);
+  document.getElementById('weekStart').addEventListener('change',()=>buildWeek(true));
   document.getElementById('saveWeek').addEventListener('click',saveCurrentWeek);
   document.getElementById('closeWeekView').addEventListener('click',()=>document.getElementById('weekViewPanel').classList.remove('show'));
   document.getElementById('cancelEditWeek').addEventListener('click',()=>document.getElementById('weekEditor').classList.remove('show'));

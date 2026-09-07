@@ -473,7 +473,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.8 · IA desde Configuración</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.9 · impuesto normalizado</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -1214,7 +1214,7 @@ function parseTelmexOcr(text,file){
     dailySalary:salaryMatch?parseTelmexMoney(salaryMatch[1])||0:0,
     perceptions,
     deductions,
-    taxes:taxConcept?.amount||0,
+    taxes:Math.abs(Number(taxConcept?.amount||0)),
     net,
     extraordinary:special.extraordinary,
     parserProfile:'telmex-local-ocr',
@@ -1531,7 +1531,7 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     if(table?.concepts?.length){
       parsed.concepts=table.concepts;
       const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
-      if(tax)parsed.taxes=Number(tax.amount||0);
+      if(tax)parsed.taxes=Math.abs(Number(tax.amount||0));
     }
   }catch(err){
     stageErrors.push(`Tabla de conceptos: ${err?.message||err}`);
@@ -1541,7 +1541,7 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
     try{
       const full=normalizeOcrText(fullText).split('\n').join(' ');
       const taxMatch=full.match(/(?:^|\s)55\s+Impuesto[\s\S]{0,80}?([0-9][0-9,]*\.\d{2})/i);
-      if(taxMatch)parsed.taxes=parseTelmexMoney(taxMatch[1])||0;
+      if(taxMatch)parsed.taxes=Math.abs(parseTelmexMoney(taxMatch[1])||0);
     }catch{}
   }
 
@@ -1662,7 +1662,7 @@ function normalizePayslipData(raw,file=null){
     dailySalary:Number(d.dailySalary??d.salario_diario??0),
     perceptions:Number(d.perceptions??d.total_percepciones??0),
     deductions:Number(d.deductions??d.total_deducciones??0),
-    taxes:Number(d.taxes??d.impuestos??0),
+    taxes:Math.abs(Number(d.taxes??d.impuestos??0)),
     net:Number(d.net??d.neto??0),
     extraordinary:Boolean(d.extraordinary),
     parserProfile:d.parserProfile||document.getElementById('payslipProfile').value,
@@ -1904,7 +1904,7 @@ function renderPayslipPreview(raw){
   if(trulyValid){
     val.textContent=`✓ Validado con totales impresos: ${money(d.perceptions)} − ${money(d.deductions)} = ${money(d.net)}`;
   }else if(ok){
-    val.textContent='⚠ Los valores cuadran, pero fueron reconstruidos. Revisar contra el volante.';
+    val.textContent='⚠ Revisar: falta validar algún dato del volante.';
   }else{
     val.textContent=`⚠ Revisar: el cálculo da ${money(calc)} y el neto leído es ${money(d.net)}.`;
   }
