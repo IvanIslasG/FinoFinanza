@@ -372,7 +372,7 @@ function clearStatementReader(){
   const input=document.getElementById('gStatementFile');
   if(input)input.value='';
   const name=document.getElementById('gStatementFileName');
-  if(name)name.textContent='Ningún archivo seleccionado';
+  if(name)name.textContent='Haz clic aquí para elegir un archivo PDF';
   const preview=document.getElementById('gStatementPreview');
   if(preview)preview.style.display='none';
   const dbg=document.getElementById('gStatementOcr');
@@ -861,11 +861,43 @@ function injectStyles(){
     #gastos .g-danger{color:#b42318}
     #gastos .g-empty{padding:28px;text-align:center;color:#667085}
     #gastos .g-count-row{display:flex;justify-content:space-between;gap:12px;margin:7px 0;color:#667085;font-size:10px}
-    #gastos .g-statement-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-    #gastos .g-statement-drop{border:1px dashed #84adff;background:#f8fbff;border-radius:12px;padding:16px;text-align:center;cursor:pointer}
-    #gastos .g-statement-drop strong{display:block;margin-bottom:4px}
-    #gastos .g-statement-drop small{color:#667085}
-    #gastos .g-statement-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    #gastos .g-statement-controls{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:10px;
+      width:100%
+    }
+    #gastos .g-statement-controls .g-field{min-width:0}
+    #gastos .g-statement-controls input,
+    #gastos .g-statement-controls select{width:100%;min-width:0;box-sizing:border-box}
+    #gastos .g-statement-drop{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      width:100%;
+      min-height:112px;
+      box-sizing:border-box;
+      margin-top:12px;
+      border:1.5px dashed #84adff;
+      background:#f8fbff;
+      border-radius:12px;
+      padding:18px;
+      text-align:center;
+      cursor:pointer;
+      color:#101828
+    }
+    #gastos .g-statement-drop:hover{background:#f0f6ff;border-color:#528bff}
+    #gastos .g-statement-drop strong{display:block;margin:0 0 5px;font-size:13px}
+    #gastos .g-statement-drop small{display:block;color:#667085;font-size:10px}
+    #gastos .g-statement-actions{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-top:12px;
+      justify-content:flex-start;
+      align-items:center
+    }
     #gastos .g-statement-status{margin-top:10px;padding:9px 11px;border-radius:9px;background:#f8fafc;border:1px solid #e4e7ec;color:#475467;font-size:11px}
     #gastos .g-statement-status[data-kind="ok"]{background:#ecfdf3;border-color:#abefc6;color:#067647}
     #gastos .g-statement-status[data-kind="warn"]{background:#fffaeb;border-color:#fedf89;color:#b54708}
@@ -1030,8 +1062,9 @@ function renderShell(){
           </div>
 
           <label class="g-statement-drop" for="gStatementFile">
-            <strong>Seleccionar estado de cuenta PDF</strong>
-            <small id="gStatementFileName">Ningún archivo seleccionado</small>
+            <span style="font-size:24px;line-height:1;margin-bottom:7px">PDF</span>
+            <strong>Seleccionar estado de cuenta</strong>
+            <small id="gStatementFileName">Haz clic aquí para elegir un archivo PDF</small>
             <input id="gStatementFile" type="file" accept="application/pdf,.pdf" hidden>
           </label>
 
