@@ -34,6 +34,353 @@ const PAYMENT_METHODS=[
   'Domiciliación','Vales','Otro'
 ];
 
+let statementPdfFile=null;
+let statementPdfDoc=null;
+let statementMovements=[];
+let statementProfile='hsbc-2now';
+const PDFJS_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+const PDFJS_WORKER='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const TESSERACT_CDN='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+
+function ensureScript(src,id){
+  return new Promise((resolve,reject)=>{
+    if(id&&document.getElementById(id))return resolve();
+    const existing=[...document.scripts].find(s=>s.src===src);
+    if(existing){
+      if(existing.dataset.loaded==='1')return resolve();
+      existing.addEventListener('load',()=>resolve(),{once:true});
+      existing.addEventListener('error',()=>reject(new Error('No fue posible cargar '+src)),{once:true});
+      return;
+    }
+    const s=document.createElement('script');
+    if(id)s.id=id;
+    s.src=src;
+    s.async=true;
+    s.addEventListener('load',()=>{s.dataset.loaded='1';resolve()},{once:true});
+    s.addEventListener('error',()=>reject(new Error('No fue posible cargar '+src)),{once:true});
+    document.head.appendChild(s);
+  });
+}
+
+async function ensureStatementLibraries(){
+  if(!window.pdfjsLib){
+    await ensureScript(PDFJS_CDN,'ffPdfJs');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_WORKER;
+  }
+  if(!window.Tesseract){
+    await ensureScript(TESSERACT_CDN,'ffTesseractJs');
+  }
+}
+
+function parseMoneyMX(raw=''){
+  let s=String(raw).replace(/[^\d.,-]/g,'').trim();
+  if(!s)return 0;
+  if(s.includes(',')&&s.includes('.'))s=s.replace(/,/g,'');
+  else if(s.includes(',')&&!s.includes('.'))s=s.replace(',','.');
+  return Number(s)||0;
+}
+
+function parseHsbcDate(raw='',year=2026){
+  const m=String(raw).match(/(\d{1,2})[-\/](\w{3})[-\/](\d{4})/i);
+  if(!m)return '';
+  const months={ene:'01',feb:'02',mar:'03',abr:'04',may:'05',jun:'06',jul:'07',ago:'08',sep:'09',oct:'10',nov:'11',dic:'12'};
+  const mon=months[norm(m[2]).slice(0,3)];
+  if(!mon)return '';
+  return `${m[3]}-${mon}-${String(m[1]).padStart(2,'0')}`;
+}
+
+function classifyHsbcMovement(description='',signedAmount=0){
+  const d=norm(description);
+  if(d.includes('su pago')||d.includes('pago gracias')||signedAmount<0){
+    return {kind:'payment',importable:false,type:'',category:'',reason:'Pago/abono: no es gasto nuevo'};
+  }
+  if(d.includes('intereses')||d.includes('iva sobre comisiones')||d.includes('iva promocion')){
+    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',reason:'Cargo financiero: revisar antes de importar'};
+  }
+
+  let type='corriente',category='Otro';
+  if(d.includes('spotify')||d.includes('netflix')||d.includes('chatgpt')){
+    type='fijo'; category='Suscripciones';
+  }else if(d.includes('gasol')||d.includes('gaso')||d.includes('pemex')){
+    category='Gasolina';
+  }else if(d.includes('mercado')||d.includes('walmart')||d.includes('bodega')||d.includes('chedraui')||d.includes('soriana')){
+    category='Supermercado';
+  }else if(d.includes('tacos')||d.includes('appleb')||d.includes('restaurant')||d.includes('cafe')||d.includes('comida')){
+    category='Comida fuera';
+  }else if(d.includes('cine')||d.includes('cinemex')||d.includes('cinepolis')){
+    category='Entretenimiento';
+  }else if(d.includes('dulcer')||d.includes('pastel')||d.includes('frutas')||d.includes('helado')){
+    category='Comida fuera';
+  }else if(d.includes('clinica')||d.includes('farm')||d.includes('doctor')){
+    category='Salud / Farmacia';
+  }
+
+  return {kind:'purchase',importable:true,type,category,reason:'Compra regular'};
+}
+
+function extractHsbcMovementsFromOCR(text=''){
+  const lines=String(text).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const rows=[];
+
+  // HSBC 2Now: filas comienzan con fecha operación, fecha cargo, descripción y monto.
+  const datePattern=/^(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(.+?)\s+([+-]?\s*\$?\s*[\d,]+\.\d{2})$/i;
+
+  for(const line of lines){
+    const clean=line.replace(/\s{2,}/g,' ');
+    const m=clean.match(datePattern);
+    if(!m)continue;
+
+    let amountText=m[4].replace(/\s/g,'');
+    const negative=/^-/.test(amountText);
+    const amount=parseMoneyMX(amountText);
+    const signedAmount=negative?-Math.abs(amount):Math.abs(amount);
+    const classification=classifyHsbcMovement(m[3],signedAmount);
+
+    rows.push({
+      operationDate:parseHsbcDate(m[1]),
+      chargeDate:parseHsbcDate(m[2]),
+      description:m[3].trim(),
+      amount:Math.abs(amount),
+      signedAmount,
+      ...classification,
+      selected:classification.importable,
+      source:'HSBC 2Now'
+    });
+  }
+
+  // Deduplicate OCR echoes.
+  const seen=new Set();
+  return rows.filter(r=>{
+    const key=[r.operationDate,r.chargeDate,norm(r.description),r.signedAmount].join('|');
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function renderPdfPageToCanvas(pdf,pageNum,scale=2){
+  const page=await pdf.getPage(pageNum);
+  const viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  await page.render({canvasContext:ctx,viewport}).promise;
+  return canvas;
+}
+
+async function ocrHsbcMovementPage(pdf){
+  // En el formato HSBC 2Now de muestra, el desglose está en la página PDF 4.
+  // Si cambia el número de páginas, buscamos páginas candidatas 3-5.
+  const candidates=[];
+  if(pdf.numPages>=4)candidates.push(4);
+  for(const n of [3,5]){
+    if(n<=pdf.numPages&&!candidates.includes(n))candidates.push(n);
+  }
+
+  const worker=await window.Tesseract.createWorker('spa');
+  try{
+    for(const pageNum of candidates){
+      setStatementStatus(`Leyendo página ${pageNum} de ${pdf.numPages}…`);
+      const canvas=await renderPdfPageToCanvas(pdf,pageNum,2.25);
+      const result=await worker.recognize(canvas);
+      const text=result?.data?.text||'';
+
+      if(norm(text).includes('compras y cargos')||norm(text).includes('cargos abonos')||norm(text).includes('fecha de la operacion')){
+        return {pageNum,text};
+      }
+    }
+  }finally{
+    await worker.terminate();
+  }
+  return {pageNum:null,text:''};
+}
+
+function setStatementStatus(text='',kind=''){
+  const el=document.getElementById('gStatementStatus');
+  if(!el)return;
+  el.textContent=text;
+  el.dataset.kind=kind;
+}
+
+function statementCardName(){
+  return document.getElementById('gStatementCardName')?.value?.trim()||'HSBC 2Now';
+}
+
+function ensureStatementCardCatalog(){
+  const name=statementCardName();
+  if(!name)return;
+  const cards=getCreditCards();
+  if(!cards.some(x=>norm(x)===norm(name))){
+    saveCreditCards([...cards,name]);
+  }
+}
+
+async function processStatement(){
+  if(!statementPdfFile){
+    alert('Selecciona primero un estado de cuenta PDF.');
+    return;
+  }
+
+  try{
+    await ensureStatementLibraries();
+    setStatementStatus('Abriendo PDF…');
+
+    const data=await statementPdfFile.arrayBuffer();
+    statementPdfDoc=await window.pdfjsLib.getDocument({data}).promise;
+
+    if(statementProfile!=='hsbc-2now'){
+      throw new Error('Por ahora solo está disponible el perfil HSBC 2Now.');
+    }
+
+    const {pageNum,text}=await ocrHsbcMovementPage(statementPdfDoc);
+    if(!pageNum||!text){
+      setStatementStatus('No encontré la tabla de movimientos de HSBC 2Now.','warn');
+      return;
+    }
+
+    const rows=extractHsbcMovementsFromOCR(text);
+    statementMovements=rows;
+
+    if(!rows.length){
+      setStatementStatus(`Encontré la página ${pageNum}, pero no pude estructurar sus movimientos. Usa “Ver OCR” para revisar el texto.`,'warn');
+      const dbg=document.getElementById('gStatementOcr');
+      if(dbg){dbg.value=text;dbg.closest('.g-statement-debug').style.display='block'}
+      return;
+    }
+
+    const dbg=document.getElementById('gStatementOcr');
+    if(dbg)dbg.value=text;
+
+    renderStatementPreview();
+    setStatementStatus(`${rows.length} movimientos detectados en la página ${pageNum}. Revisa antes de importar.`,'ok');
+  }catch(err){
+    console.error(err);
+    setStatementStatus('No fue posible leer el estado de cuenta: '+(err?.message||err),'warn');
+  }
+}
+
+function renderStatementPreview(){
+  const area=document.getElementById('gStatementPreview');
+  const body=document.getElementById('gStatementBody');
+  if(!area||!body)return;
+
+  area.style.display='';
+  body.innerHTML=statementMovements.map((r,i)=>`
+    <tr class="${r.importable?'':'g-statement-muted'}">
+      <td><input type="checkbox" data-st-check="${i}" ${r.selected?'checked':''} ${r.importable?'':'disabled'}></td>
+      <td>${fmtDate(r.operationDate)}</td>
+      <td>${fmtDate(r.chargeDate)}</td>
+      <td>
+        <strong>${esc(r.description)}</strong>
+        <br><small>${esc(r.reason)}</small>
+      </td>
+      <td>
+        ${r.importable?`
+          <select data-st-type="${i}">
+            <option value="fijo" ${r.type==='fijo'?'selected':''}>Fijo</option>
+            <option value="corriente" ${r.type==='corriente'?'selected':''}>Corriente</option>
+            <option value="manutencion" ${r.type==='manutencion'?'selected':''}>Manutención</option>
+          </select>
+        `:`<span>${r.kind==='payment'?'Pago/abono':'Cargo financiero'}</span>`}
+      </td>
+      <td>
+        ${r.importable?`<select data-st-cat="${i}">${getCategories(r.type).map(c=>`<option value="${esc(c)}" ${c===r.category?'selected':''}>${esc(c)}</option>`).join('')}</select>`:'—'}
+      </td>
+      <td class="g-money">${r.signedAmount<0?'- ':''}${money(r.amount)}</td>
+    </tr>
+  `).join('');
+
+  body.querySelectorAll('[data-st-check]').forEach(el=>{
+    el.addEventListener('change',()=>statementMovements[Number(el.dataset.stCheck)].selected=el.checked);
+  });
+  body.querySelectorAll('[data-st-type]').forEach(el=>{
+    el.addEventListener('change',()=>{
+      const i=Number(el.dataset.stType);
+      statementMovements[i].type=el.value;
+      statementMovements[i].category=getCategories(el.value)[0]||'Otro';
+      renderStatementPreview();
+    });
+  });
+  body.querySelectorAll('[data-st-cat]').forEach(el=>{
+    el.addEventListener('change',()=>{
+      const i=Number(el.dataset.stCat);
+      statementMovements[i].category=el.value;
+    });
+  });
+
+  const purchases=statementMovements.filter(x=>x.importable).length;
+  const excluded=statementMovements.length-purchases;
+  document.getElementById('gStatementSummary').textContent=
+    `${purchases} compras importables · ${excluded} movimientos excluidos/revisión`;
+}
+
+async function importSelectedStatementMovements(){
+  const selected=statementMovements.filter(x=>x.importable&&x.selected);
+  if(!selected.length){
+    alert('No hay compras seleccionadas para importar.');
+    return;
+  }
+
+  const person=document.getElementById('gStatementPerson')?.value||document.getElementById('gPerson')?.value||'';
+  if(!person){
+    alert('Selecciona la persona titular del estado de cuenta.');
+    return;
+  }
+
+  ensureStatementCardCatalog();
+  const card=statementCardName();
+
+  const existing=await dbGetAll();
+  let imported=0,skipped=0;
+
+  for(const r of selected){
+    const duplicate=existing.some(x=>
+      x.date===r.operationDate &&
+      Math.abs(Number(x.amount||0)-Number(r.amount||0))<0.01 &&
+      norm(x.description)===norm(r.description) &&
+      norm(x.creditCard||'')===norm(card)
+    );
+    if(duplicate){skipped++;continue}
+
+    await dbAdd({
+      person,
+      type:r.type,
+      category:r.category||'Otro',
+      date:r.operationDate||r.chargeDate||today(),
+      description:r.description,
+      amount:Number(r.amount||0),
+      paymentMethod:'Tarjeta de crédito',
+      creditCard:card,
+      account:'',
+      note:`Importado desde estado de cuenta HSBC 2Now · cargo ${fmtDate(r.chargeDate)}`,
+      source:'statement-hsbc-2now',
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    });
+    imported++;
+  }
+
+  await renderAll();
+  setStatementStatus(`Importación terminada: ${imported} nuevas · ${skipped} duplicadas omitidas.`,'ok');
+}
+
+function clearStatementReader(){
+  statementPdfFile=null;
+  statementPdfDoc=null;
+  statementMovements=[];
+  const input=document.getElementById('gStatementFile');
+  if(input)input.value='';
+  const name=document.getElementById('gStatementFileName');
+  if(name)name.textContent='Ningún archivo seleccionado';
+  const preview=document.getElementById('gStatementPreview');
+  if(preview)preview.style.display='none';
+  const dbg=document.getElementById('gStatementOcr');
+  if(dbg)dbg.value='';
+  setStatementStatus('Selecciona un estado de cuenta HSBC 2Now.');
+}
+
+
 function esc(s=''){
   return String(s).replace(/[&<>"']/g,m=>({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -514,6 +861,21 @@ function injectStyles(){
     #gastos .g-danger{color:#b42318}
     #gastos .g-empty{padding:28px;text-align:center;color:#667085}
     #gastos .g-count-row{display:flex;justify-content:space-between;gap:12px;margin:7px 0;color:#667085;font-size:10px}
+    #gastos .g-statement-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+    #gastos .g-statement-drop{border:1px dashed #84adff;background:#f8fbff;border-radius:12px;padding:16px;text-align:center;cursor:pointer}
+    #gastos .g-statement-drop strong{display:block;margin-bottom:4px}
+    #gastos .g-statement-drop small{color:#667085}
+    #gastos .g-statement-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    #gastos .g-statement-status{margin-top:10px;padding:9px 11px;border-radius:9px;background:#f8fafc;border:1px solid #e4e7ec;color:#475467;font-size:11px}
+    #gastos .g-statement-status[data-kind="ok"]{background:#ecfdf3;border-color:#abefc6;color:#067647}
+    #gastos .g-statement-status[data-kind="warn"]{background:#fffaeb;border-color:#fedf89;color:#b54708}
+    #gastos .g-statement-preview{margin-top:14px}
+    #gastos .g-statement-preview select{max-width:180px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;background:#fff;font-size:10px}
+    #gastos .g-statement-muted{opacity:.58;background:#f8fafc}
+    #gastos .g-statement-debug{display:none;margin-top:12px}
+    #gastos .g-statement-debug textarea{width:100%;min-height:150px;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:10px;padding:10px;font:10px ui-monospace,monospace}
+    @media(max-width:820px){#gastos .g-statement-controls{grid-template-columns:1fr}}
+
     @media(max-width:1180px){
       #gastos .g-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
       #gastos .g-filter-grid{grid-template-columns:1fr 1fr 1fr}
@@ -639,6 +1001,78 @@ function renderShell(){
         </div>
       </section>
 
+
+      <section class="g-card">
+        <div class="g-head">
+          <div>
+            <h3>Lector de estados de cuenta</h3>
+            <small>Primera versión: HSBC 2Now · OCR local · revisión antes de importar.</small>
+          </div>
+        </div>
+        <div class="g-body">
+          <div class="g-statement-controls">
+            <div class="g-field">
+              <label>Perfil bancario</label>
+              <select id="gStatementProfile">
+                <option value="hsbc-2now">HSBC 2Now · Tarjeta de crédito</option>
+              </select>
+            </div>
+
+            <div class="g-field">
+              <label>Persona</label>
+              <select id="gStatementPerson"></select>
+            </div>
+
+            <div class="g-field">
+              <label>Nombre de la tarjeta</label>
+              <input id="gStatementCardName" type="text" value="HSBC 2Now" placeholder="Ej. HSBC 2Now">
+            </div>
+          </div>
+
+          <label class="g-statement-drop" for="gStatementFile">
+            <strong>Seleccionar estado de cuenta PDF</strong>
+            <small id="gStatementFileName">Ningún archivo seleccionado</small>
+            <input id="gStatementFile" type="file" accept="application/pdf,.pdf" hidden>
+          </label>
+
+          <div class="g-statement-actions">
+            <button class="g-btn g-primary" id="gStatementProcess" type="button">Leer estado de cuenta</button>
+            <button class="g-btn" id="gStatementToggleOCR" type="button">Ver OCR</button>
+            <button class="g-btn" id="gStatementClear" type="button">Limpiar</button>
+          </div>
+
+          <div class="g-statement-status" id="gStatementStatus">Selecciona un estado de cuenta HSBC 2Now.</div>
+
+          <div class="g-statement-preview" id="gStatementPreview" style="display:none">
+            <div class="g-count-row">
+              <strong id="gStatementSummary"></strong>
+              <button class="g-btn g-primary" id="gStatementImport" type="button">Importar seleccionados</button>
+            </div>
+
+            <div class="g-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Operación</th>
+                    <th>Cargo</th>
+                    <th>Movimiento</th>
+                    <th>Tipo</th>
+                    <th>Categoría</th>
+                    <th>Monto</th>
+                  </tr>
+                </thead>
+                <tbody id="gStatementBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="g-statement-debug">
+            <textarea id="gStatementOcr" readonly placeholder="Texto OCR detectado"></textarea>
+          </div>
+        </div>
+      </section>
+
       <section class="g-card">
         <div class="g-head">
           <div><h3>Historial de gastos</h3><small id="gHistoryTitle">Todos los gastos registrados</small></div>
@@ -702,6 +1136,16 @@ function fillPeople(selected=''){
   }
   const add=document.getElementById('gAddPerson');
   if(add)add.style.display=family?'none':'';
+  const statementPerson=document.getElementById('gStatementPerson');
+  if(statementPerson){
+    const oldStatement=statementPerson.value;
+    statementPerson.innerHTML=(family?'':'<option value="">Selecciona persona</option>')+
+      people.map(p=>`<option value="${esc(p)}">${esc(personLabel(p))}</option>`).join('');
+    if(oldStatement&&people.includes(oldStatement))statementPerson.value=oldStatement;
+    else if(selected&&people.includes(selected))statementPerson.value=selected;
+    else if(family&&people.length)statementPerson.value=people[0];
+  }
+
   const filter=document.getElementById('gFilterPerson');
   if(filter){
     const old=filter.value;
@@ -936,6 +1380,23 @@ function bindEvents(){
   document.getElementById('gAddPerson').addEventListener('click',addPerson);
   document.getElementById('gAddCategory').addEventListener('click',addCategory);
   document.getElementById('gAddCreditCard').addEventListener('click',addCreditCard);
+  document.getElementById('gStatementFile')?.addEventListener('change',e=>{
+    statementPdfFile=e.target.files?.[0]||null;
+    const label=document.getElementById('gStatementFileName');
+    if(label)label.textContent=statementPdfFile?`${statementPdfFile.name} · ${(statementPdfFile.size/1024).toFixed(0)} KB`:'Ningún archivo seleccionado';
+    statementMovements=[];
+    document.getElementById('gStatementPreview').style.display='none';
+    setStatementStatus(statementPdfFile?'PDF listo para leer.':'Selecciona un estado de cuenta HSBC 2Now.');
+  });
+  document.getElementById('gStatementProfile')?.addEventListener('change',e=>statementProfile=e.target.value);
+  document.getElementById('gStatementProcess')?.addEventListener('click',processStatement);
+  document.getElementById('gStatementImport')?.addEventListener('click',importSelectedStatementMovements);
+  document.getElementById('gStatementClear')?.addEventListener('click',clearStatementReader);
+  document.getElementById('gStatementToggleOCR')?.addEventListener('click',()=>{
+    const wrap=document.getElementById('gStatementOcr')?.closest('.g-statement-debug');
+    if(!wrap)return;
+    wrap.style.display=wrap.style.display==='block'?'none':'block';
+  });
 
   document.getElementById('gType').addEventListener('change',e=>setFormType(e.target.value));
   document.getElementById('gPayment').addEventListener('change',()=>updatePaymentUI());
