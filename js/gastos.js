@@ -10,6 +10,8 @@ const PEOPLE_KEY='finoFinanza.incomePeople';
 const AI_TOKEN_KEY='finoFinanza.aiAccessToken';
 const CAT_PREFIX='finoFinanza.gastoCategorias.';
 const CREDIT_CARDS_KEY='finoFinanza.creditCards';
+const QUICK_TEMPLATES_KEY='finoFinanza.quickExpenseTemplates';
+const LEGACY_FIXED_TEMPLATES_KEY='finoFinanza.fixedExpenseTemplates';
 
 const BASE_CATEGORIES={
   fijo:[
@@ -99,6 +101,139 @@ function getCreditCards(){
 function saveCreditCards(values){
   localStorage.setItem(CREDIT_CARDS_KEY,JSON.stringify(unique(values)));
 }
+
+
+const DEFAULT_QUICK_TEMPLATES=[
+  {name:'Spotify',type:'fijo',category:'Suscripciones',description:'Spotify',paymentMethod:'Tarjeta de crédito',creditCard:''},
+  {name:'Netflix',type:'fijo',category:'Suscripciones',description:'Netflix',paymentMethod:'Tarjeta de crédito',creditCard:''},
+  {name:'Internet',type:'fijo',category:'Internet',description:'Servicio de internet',paymentMethod:'Transferencia',creditCard:''},
+  {name:'Luz',type:'fijo',category:'Electricidad',description:'Servicio de electricidad',paymentMethod:'Transferencia',creditCard:''},
+  {name:'ChatGPT',type:'fijo',category:'Suscripciones',description:'ChatGPT',paymentMethod:'Tarjeta de crédito',creditCard:''},
+  {name:'Telcel',type:'fijo',category:'Telefonía',description:'Telcel',paymentMethod:'Tarjeta de crédito',creditCard:''},
+  {name:'Gasolina',type:'corriente',category:'Gasolina',description:'Gasolina',paymentMethod:'Tarjeta de crédito',creditCard:''}
+];
+
+function normalizeQuickTemplate(t){
+  return {
+    name:String(t?.name||'').trim(),
+    type:['fijo','corriente','manutencion'].includes(t?.type)?t.type:'fijo',
+    category:String(t?.category||'Otro').trim()||'Otro',
+    description:String(t?.description||t?.name||'').trim(),
+    paymentMethod:String(t?.paymentMethod||'Efectivo'),
+    creditCard:String(t?.creditCard||'')
+  };
+}
+function getQuickTemplates(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(QUICK_TEMPLATES_KEY)||'null');
+    if(Array.isArray(saved)&&saved.length)return saved.map(normalizeQuickTemplate);
+  }catch{}
+
+  // Migra automáticamente las plantillas v1.2 si existían.
+  try{
+    const legacy=JSON.parse(localStorage.getItem(LEGACY_FIXED_TEMPLATES_KEY)||'null');
+    if(Array.isArray(legacy)&&legacy.length){
+      const migrated=legacy.map(t=>normalizeQuickTemplate({...t,type:'fijo'}));
+      // Agrega Telcel y Gasolina si aún no existen.
+      for(const base of DEFAULT_QUICK_TEMPLATES){
+        if(!migrated.some(x=>norm(x.name)===norm(base.name)))migrated.push(base);
+      }
+      localStorage.setItem(QUICK_TEMPLATES_KEY,JSON.stringify(migrated));
+      return migrated;
+    }
+  }catch{}
+
+  localStorage.setItem(QUICK_TEMPLATES_KEY,JSON.stringify(DEFAULT_QUICK_TEMPLATES));
+  return [...DEFAULT_QUICK_TEMPLATES];
+}
+function saveQuickTemplates(values){
+  localStorage.setItem(QUICK_TEMPLATES_KEY,JSON.stringify(values.map(normalizeQuickTemplate)));
+}
+function addQuickTemplate(){
+  const name=prompt('Nombre del acceso rápido (ej. Telcel, Gasolina, Spotify):');
+  if(!name?.trim())return;
+
+  const rawType=prompt('Tipo: fijo, corriente o manutencion','fijo');
+  const type=norm(rawType).startsWith('corr')?'corriente':
+    norm(rawType).startsWith('manut')?'manutencion':'fijo';
+
+  const category=prompt('Categoría:', type==='corriente'?'Otro':'Suscripciones');
+  if(!category?.trim())return;
+
+  const template={
+    name:name.trim(),
+    type,
+    category:category.trim(),
+    description:name.trim(),
+    paymentMethod:'Efectivo',
+    creditCard:''
+  };
+  const list=getQuickTemplates();
+  list.push(template);
+  saveQuickTemplates(list);
+  saveCategories(type,[...getCategories(type),template.category]);
+  renderQuickTemplates();
+  fillFilterCategories();
+}
+function deleteQuickTemplate(index){
+  const list=getQuickTemplates();
+  const item=list[index];
+  if(!item)return;
+  if(!confirm(`¿Eliminar el acceso rápido "${item.name}"?`))return;
+  list.splice(index,1);
+  saveQuickTemplates(list);
+  renderQuickTemplates();
+}
+function useQuickTemplate(index){
+  const t=getQuickTemplates()[index];
+  if(!t)return;
+
+  setFormType(t.type);
+  fillCategories(t.type,t.category);
+  document.getElementById('gDescription').value=t.description||t.name||'';
+  document.getElementById('gPayment').value=t.paymentMethod||'Efectivo';
+  updatePaymentUI(t.creditCard||'');
+  document.getElementById('gDate').value=today();
+  document.getElementById('gAmount').value='';
+  document.getElementById('gAmount').focus();
+  document.getElementById('gastoForm').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function renderQuickTemplates(){
+  const wrap=document.getElementById('gQuickTemplates');
+  if(!wrap)return;
+  const list=getQuickTemplates();
+
+  wrap.innerHTML=list.map((t,i)=>`
+    <button class="g-fixed-card" type="button" data-quick-template="${i}">
+      <div class="g-fixed-icon">${t.type==='corriente'?'↗':t.type==='manutencion'?'⌂':'▣'}</div>
+      <div class="g-fixed-main">
+        <strong>${esc(t.name)}</strong>
+        <small>${esc(typeLabel(t.type))} · ${esc(t.category)}</small>
+      </div>
+      <span class="g-fixed-arrow">›</span>
+      <span class="g-fixed-delete" data-delete-quick="${i}" title="Eliminar acceso rápido">×</span>
+    </button>
+  `).join('') + `
+    <button class="g-fixed-card g-fixed-add" id="gAddQuickTemplate" type="button">
+      <div class="g-fixed-icon">＋</div>
+      <div class="g-fixed-main"><strong>Nuevo acceso</strong><small>Crear gasto rápido</small></div>
+    </button>
+  `;
+
+  wrap.querySelectorAll('[data-quick-template]').forEach(btn=>{
+    btn.addEventListener('click',e=>{
+      if(e.target.closest('[data-delete-quick]'))return;
+      useQuickTemplate(Number(btn.dataset.quickTemplate));
+    });
+  });
+  wrap.querySelectorAll('[data-delete-quick]').forEach(btn=>{
+    btn.addEventListener('click',e=>{
+      e.stopPropagation();
+      deleteQuickTemplate(Number(btn.dataset.deleteQuick));
+    });
+  });
+  document.getElementById('gAddQuickTemplate')?.addEventListener('click',addQuickTemplate);
+}
 function fillCreditCards(selected=''){
   const sel=document.getElementById('gCreditCard');
   if(!sel)return;
@@ -183,6 +318,22 @@ function injectStyles(){
   s.textContent=`
     #gastos .g-wrap{display:grid;gap:14px}
     #gastos .g-tabs{display:flex;gap:7px;flex-wrap:wrap}
+    #gastos .g-fixed-section{background:#fff;border:1px solid #b2ccff;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+    #gastos .g-fixed-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}
+    #gastos .g-fixed-title h3{margin:0;font-size:14px}
+    #gastos .g-fixed-title small{color:#667085}
+    #gastos .g-fixed-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:9px}
+    #gastos .g-fixed-card{position:relative;display:flex;align-items:center;gap:10px;text-align:left;border:1px solid #e4e7ec;background:#fff;border-radius:12px;padding:12px;cursor:pointer;min-height:68px}
+    #gastos .g-fixed-card:hover{background:#f8fbff;border-color:#b2ccff}
+    #gastos .g-fixed-icon{width:32px;height:32px;border-radius:9px;background:#eef4ff;color:#155eef;display:grid;place-items:center;font-weight:900;flex:0 0 auto}
+    #gastos .g-fixed-main{flex:1;min-width:0}
+    #gastos .g-fixed-main strong{display:block;font-size:12px;color:#101828;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #gastos .g-fixed-main small{display:block;margin-top:3px;color:#667085;font-size:9px}
+    #gastos .g-fixed-arrow{color:#98a2b3;font-size:18px}
+    #gastos .g-fixed-delete{position:absolute;right:6px;top:4px;color:#98a2b3;font-size:13px}
+    #gastos .g-fixed-delete:hover{color:#b42318}
+    #gastos .g-fixed-add{border-style:dashed}
+
     #gastos .g-tab{border:1px solid #d0d5dd;background:#fff;color:#344054;border-radius:10px;padding:9px 14px;font-size:11px;font-weight:800;cursor:pointer}
     #gastos .g-tab.active{background:#eff4ff;border-color:#b2ccff;color:#155eef}
     #gastos .g-card{background:#fff;border:1px solid #e4e7ec;border-radius:16px;overflow:hidden}
@@ -258,6 +409,16 @@ function renderShell(){
         <button class="g-tab" data-gtype="manutencion">Manutención</button>
         <button class="g-tab" id="gAllTab" data-gtype="todos">Todos</button>
       </div>
+
+      <section class="g-fixed-section" id="gQuickSection">
+        <div class="g-fixed-title">
+          <div>
+            <h3>Gastos rápidos</h3>
+            <small>Elige un servicio o gasto frecuente; después completa fecha y monto.</small>
+          </div>
+        </div>
+        <div class="g-fixed-grid" id="gQuickTemplates"></div>
+      </section>
 
       <div class="g-summary">
         <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
@@ -677,6 +838,7 @@ export async function initGastos(){
   document.getElementById('gDate').value=today();
   fillCreditCards();
   updatePaymentUI();
+  renderQuickTemplates();
   bindEvents();
 
   try{
