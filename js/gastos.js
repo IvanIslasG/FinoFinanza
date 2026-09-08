@@ -123,7 +123,7 @@ function extractHsbcMovementsFromOCR(text=''){
   const rows=[];
 
   // HSBC 2Now: filas comienzan con fecha operación, fecha cargo, descripción y monto.
-  const datePattern=/^(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(.+?)\s+([+-]?\s*\$?\s*[\d,]+\.\d{2})$/i;
+  const datePattern=/^(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4})\s+(.+?)\s+([+-]?\s*\$?\s*[\d,\s]+\.\d{2})$/i;
 
   for(const line of lines){
     const clean=line.replace(/\s{2,}/g,' ');
@@ -169,31 +169,57 @@ async function renderPdfPageToCanvas(pdf,pageNum,scale=2){
   return canvas;
 }
 
+function isHsbcMovementsPage(text=''){
+  const t=norm(text);
+  const hasMainTitle=
+    t.includes('cargos abonos y compras regulares') ||
+    t.includes('cargos, abonos y compras regulares') ||
+    (t.includes('compras regulares') && t.includes('no a meses'));
+
+  const hasDateHeaders=
+    (t.includes('fecha de la operacion') || t.includes('fecha operacion')) &&
+    (t.includes('fecha de cargo') || t.includes('fecha cargo'));
+
+  const hasDescriptionHeader=
+    t.includes('descripcion del movimiento') ||
+    t.includes('descripcion');
+
+  const hasAmountHeader=t.includes('monto');
+
+  const dateHits=(String(text).match(/\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4}/g)||[]).length;
+
+  return hasMainTitle && hasDateHeaders && hasDescriptionHeader && hasAmountHeader && dateHits>=4;
+}
+
 async function ocrHsbcMovementPage(pdf){
-  // En el formato HSBC 2Now de muestra, el desglose está en la página PDF 4.
-  // Si cambia el número de páginas, buscamos páginas candidatas 3-5.
   const candidates=[];
   if(pdf.numPages>=4)candidates.push(4);
-  for(const n of [3,5]){
+  for(const n of [5,3,6,2]){
     if(n<=pdf.numPages&&!candidates.includes(n))candidates.push(n);
   }
 
   const worker=await window.Tesseract.createWorker('spa');
+  let best={pageNum:null,text:'',score:0};
+
   try{
     for(const pageNum of candidates){
-      setStatementStatus(`Leyendo página ${pageNum} de ${pdf.numPages}…`);
-      const canvas=await renderPdfPageToCanvas(pdf,pageNum,2.25);
+      setStatementStatus(`Buscando movimientos · página ${pageNum} de ${pdf.numPages}…`);
+      const canvas=await renderPdfPageToCanvas(pdf,pageNum,2.35);
       const result=await worker.recognize(canvas);
       const text=result?.data?.text||'';
 
-      if(norm(text).includes('compras y cargos')||norm(text).includes('cargos abonos')||norm(text).includes('fecha de la operacion')){
+      if(isHsbcMovementsPage(text)){
         return {pageNum,text};
       }
+
+      const score=(String(text).match(/\d{1,2}[-\/][A-Za-zÁÉÍÓÚáéíóú]{3}[-\/]\d{4}/g)||[]).length;
+      if(score>best.score)best={pageNum,text,score};
     }
   }finally{
     await worker.terminate();
   }
-  return {pageNum:null,text:''};
+
+  return best.score>=4 ? best : {pageNum:null,text:''};
 }
 
 function setStatementStatus(text='',kind=''){
@@ -243,7 +269,7 @@ async function processStatement(){
     statementMovements=rows;
 
     if(!rows.length){
-      setStatementStatus(`Encontré la página ${pageNum}, pero no pude estructurar sus movimientos. Usa “Ver OCR” para revisar el texto.`,'warn');
+      setStatementStatus(`Detecté una página candidata (${pageNum}), pero no pude estructurar todavía sus movimientos. Usa “Ver OCR” para revisar el texto.`,'warn');
       const dbg=document.getElementById('gStatementOcr');
       if(dbg){dbg.value=text;dbg.closest('.g-statement-debug').style.display='block'}
       return;
