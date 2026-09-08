@@ -9,6 +9,7 @@ const GASTOS_STORE='gastos';
 const PEOPLE_KEY='finoFinanza.incomePeople';
 const AI_TOKEN_KEY='finoFinanza.aiAccessToken';
 const CAT_PREFIX='finoFinanza.gastoCategorias.';
+const CREDIT_CARDS_KEY='finoFinanza.creditCards';
 
 const BASE_CATEGORIES={
   fijo:[
@@ -87,6 +88,40 @@ function getCategories(type){
 }
 function saveCategories(type,values){
   localStorage.setItem(catKey(type),JSON.stringify(unique(values)));
+}
+
+function getCreditCards(){
+  try{
+    const cards=JSON.parse(localStorage.getItem(CREDIT_CARDS_KEY)||'[]');
+    return unique(Array.isArray(cards)?cards:[]);
+  }catch{return []}
+}
+function saveCreditCards(values){
+  localStorage.setItem(CREDIT_CARDS_KEY,JSON.stringify(unique(values)));
+}
+function fillCreditCards(selected=''){
+  const sel=document.getElementById('gCreditCard');
+  if(!sel)return;
+  const cards=getCreditCards();
+  sel.innerHTML='<option value="">Selecciona tarjeta</option>'+
+    cards.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  if(selected&&cards.includes(selected))sel.value=selected;
+}
+function updatePaymentUI(selectedCard=''){
+  const method=document.getElementById('gPayment')?.value||'';
+  const cardField=document.getElementById('gCreditCardField');
+  const accountField=document.getElementById('gAccountField');
+  const isCredit=method==='Tarjeta de crédito';
+  if(cardField)cardField.style.display=isCredit?'':'none';
+  if(accountField)accountField.style.display=isCredit?'none':'';
+  if(isCredit)fillCreditCards(selectedCard);
+}
+function addCreditCard(){
+  const name=prompt('Nombre de la tarjeta de crédito:');
+  if(!name?.trim())return;
+  const value=name.trim();
+  saveCreditCards([...getCreditCards(),value]);
+  fillCreditCards(value);
 }
 
 function openGastosDB(){
@@ -278,9 +313,17 @@ function renderShell(){
                 <select id="gPayment">${PAYMENT_METHODS.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
               </div>
 
-              <div class="g-field g-span2">
-                <label>Cuenta / Tarjeta (opcional)</label>
-                <input id="gAccount" type="text" placeholder="Ej. BBVA débito, Nu crédito, efectivo...">
+              <div class="g-field" id="gCreditCardField" style="display:none">
+                <label>Tarjeta de crédito</label>
+                <div class="g-inline">
+                  <select id="gCreditCard"></select>
+                  <button class="g-plus" id="gAddCreditCard" type="button" title="Dar de alta tarjeta">＋</button>
+                </div>
+              </div>
+
+              <div class="g-field g-span2" id="gAccountField">
+                <label>Cuenta / Medio (opcional)</label>
+                <input id="gAccount" type="text" placeholder="Ej. BBVA débito, efectivo, transferencia...">
               </div>
               <div class="g-field g-span2">
                 <label>Nota (opcional)</label>
@@ -427,6 +470,7 @@ function resetForm(){
   fillPeople();
   setFormType(gastoViewType==='todos'?'corriente':gastoViewType);
   document.getElementById('gDate').value=today();
+  updatePaymentUI();
   document.getElementById('gSave').textContent='Guardar gasto';
   document.getElementById('gCancelEdit').style.display='none';
 }
@@ -441,12 +485,21 @@ async function saveGasto(e){
     description:document.getElementById('gDescription').value.trim(),
     amount:Number(document.getElementById('gAmount').value||0),
     paymentMethod:document.getElementById('gPayment').value,
-    account:document.getElementById('gAccount').value.trim(),
+    creditCard:document.getElementById('gPayment').value==='Tarjeta de crédito'
+      ? (document.getElementById('gCreditCard')?.value||'')
+      : '',
+    account:document.getElementById('gPayment').value==='Tarjeta de crédito'
+      ? ''
+      : document.getElementById('gAccount').value.trim(),
     note:document.getElementById('gNote').value.trim(),
     updatedAt:new Date().toISOString()
   };
   if(!item.person||!item.date||!item.category||!item.description||item.amount<=0){
     alert('Completa persona, fecha, categoría, descripción y monto.');
+    return;
+  }
+  if(item.paymentMethod==='Tarjeta de crédito' && !item.creditCard){
+    alert('Selecciona la tarjeta de crédito utilizada.');
     return;
   }
 
@@ -475,6 +528,7 @@ async function editGasto(id){
   document.getElementById('gDescription').value=item.description||'';
   document.getElementById('gAmount').value=item.amount||'';
   document.getElementById('gPayment').value=item.paymentMethod||'Efectivo';
+  updatePaymentUI(item.creditCard||'');
   document.getElementById('gAccount').value=item.account||'';
   document.getElementById('gNote').value=item.note||'';
   document.getElementById('gSave').textContent='Guardar cambios';
@@ -531,7 +585,7 @@ async function renderHistory(){
     if(f.from&&String(x.date||'')<f.from)return false;
     if(f.to&&String(x.date||'')>f.to)return false;
     if(f.q){
-      const hay=norm([personLabel(x.person),x.category,x.description,x.paymentMethod,x.account,x.note].join(' '));
+      const hay=norm([personLabel(x.person),x.category,x.description,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
       if(!hay.includes(f.q))return false;
     }
     return true;
@@ -554,7 +608,7 @@ async function renderHistory(){
       <td><span class="g-type ${esc(x.type)}">${esc(typeLabel(x.type))}</span></td>
       <td>${esc(x.category)}</td>
       <td><strong>${esc(x.description)}</strong>${x.account?`<br><small>${esc(x.account)}</small>`:''}</td>
-      <td>${esc(x.paymentMethod||'—')}</td>
+      <td>${esc(x.paymentMethod||'—')}${x.creditCard?`<br><small>${esc(x.creditCard)}</small>`:''}</td>
       <td class="g-money">${money(x.amount)}</td>
       <td>
         <button class="g-btn" data-edit-g="${x.id}" type="button">Editar</button>
@@ -581,8 +635,10 @@ function bindEvents(){
   document.getElementById('gCancelEdit').addEventListener('click',resetForm);
   document.getElementById('gAddPerson').addEventListener('click',addPerson);
   document.getElementById('gAddCategory').addEventListener('click',addCategory);
+  document.getElementById('gAddCreditCard').addEventListener('click',addCreditCard);
 
   document.getElementById('gType').addEventListener('change',e=>setFormType(e.target.value));
+  document.getElementById('gPayment').addEventListener('change',()=>updatePaymentUI());
 
   document.querySelectorAll('#gastos .g-tab[data-gtype]').forEach(btn=>{
     btn.addEventListener('click',()=>{
@@ -619,6 +675,8 @@ export async function initGastos(){
   fillFilterCategories();
   setFormType('corriente');
   document.getElementById('gDate').value=today();
+  fillCreditCards();
+  updatePaymentUI();
   bindEvents();
 
   try{
