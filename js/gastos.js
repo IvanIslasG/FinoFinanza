@@ -149,31 +149,153 @@ function getQuickTemplates(){
 function saveQuickTemplates(values){
   localStorage.setItem(QUICK_TEMPLATES_KEY,JSON.stringify(values.map(normalizeQuickTemplate)));
 }
-function addQuickTemplate(){
-  const name=prompt('Nombre del acceso rápido (ej. Telcel, Gasolina, Spotify):');
-  if(!name?.trim())return;
 
-  const rawType=prompt('Tipo: fijo, corriente o manutencion','fijo');
-  const type=norm(rawType).startsWith('corr')?'corriente':
-    norm(rawType).startsWith('manut')?'manutencion':'fijo';
+function ensureQuickTemplateModal(){
+  if(document.getElementById('gQuickModal'))return;
 
-  const category=prompt('Categoría:', type==='corriente'?'Otro':'Suscripciones');
-  if(!category?.trim())return;
+  const overlay=document.createElement('div');
+  overlay.id='gQuickModal';
+  overlay.className='g-quick-overlay';
+  overlay.innerHTML=`
+    <div class="g-quick-modal" role="dialog" aria-modal="true" aria-labelledby="gQuickModalTitle">
+      <div class="g-quick-modal-head">
+        <div>
+          <h3 id="gQuickModalTitle">Nuevo gasto rápido</h3>
+          <p>Elige un tipo y una categoría conocida.</p>
+        </div>
+        <button class="g-btn" id="gQuickClose" type="button">Cerrar</button>
+      </div>
+
+      <div class="g-quick-modal-body">
+        <div class="g-form-grid">
+          <div class="g-field g-span2">
+            <label>Nombre del acceso</label>
+            <input id="gQuickName" type="text" placeholder="Ej. Disney+, Telcel, Gasolina">
+          </div>
+
+          <div class="g-field">
+            <label>Tipo de gasto</label>
+            <select id="gQuickType">
+              <option value="fijo">Fijo</option>
+              <option value="corriente">Corriente</option>
+              <option value="manutencion">Manutención</option>
+            </select>
+          </div>
+
+          <div class="g-field">
+            <label>Categoría</label>
+            <select id="gQuickCategory"></select>
+          </div>
+
+          <div class="g-field g-span2" id="gQuickOtherWrap" style="display:none">
+            <label>Nueva categoría</label>
+            <input id="gQuickOtherCategory" type="text" placeholder="Escribe la categoría">
+          </div>
+        </div>
+
+        <div class="g-actions">
+          <button class="g-btn" id="gQuickCancel" type="button">Cancelar</button>
+          <button class="g-btn g-primary" id="gQuickSave" type="button">Crear acceso rápido</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById('gQuickClose')?.addEventListener('click',closeQuickTemplateModal);
+  document.getElementById('gQuickCancel')?.addEventListener('click',closeQuickTemplateModal);
+  overlay.addEventListener('click',e=>{
+    if(e.target===overlay)closeQuickTemplateModal();
+  });
+
+  document.getElementById('gQuickType')?.addEventListener('change',()=>{
+    fillQuickTemplateCategories();
+  });
+  document.getElementById('gQuickCategory')?.addEventListener('change',()=>{
+    updateQuickOtherCategory();
+  });
+  document.getElementById('gQuickSave')?.addEventListener('click',saveQuickTemplateFromModal);
+}
+
+function fillQuickTemplateCategories(selected=''){
+  const type=document.getElementById('gQuickType')?.value||'fijo';
+  const sel=document.getElementById('gQuickCategory');
+  if(!sel)return;
+
+  const list=getCategories(type);
+  const known=list.filter(x=>norm(x)!=='otro');
+  sel.innerHTML=known.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')
+    + '<option value="Otro">Otro</option>';
+
+  if(selected && [...known,'Otro'].includes(selected))sel.value=selected;
+  updateQuickOtherCategory();
+}
+
+function updateQuickOtherCategory(){
+  const category=document.getElementById('gQuickCategory')?.value||'';
+  const wrap=document.getElementById('gQuickOtherWrap');
+  if(wrap)wrap.style.display=norm(category)==='otro'?'':'none';
+  if(norm(category)!=='otro'){
+    const input=document.getElementById('gQuickOtherCategory');
+    if(input)input.value='';
+  }
+}
+
+function openQuickTemplateModal(){
+  ensureQuickTemplateModal();
+
+  document.getElementById('gQuickName').value='';
+  document.getElementById('gQuickType').value='fijo';
+  document.getElementById('gQuickOtherCategory').value='';
+  fillQuickTemplateCategories();
+
+  document.getElementById('gQuickModal').classList.add('show');
+  setTimeout(()=>document.getElementById('gQuickName')?.focus(),40);
+}
+
+function closeQuickTemplateModal(){
+  document.getElementById('gQuickModal')?.classList.remove('show');
+}
+
+function saveQuickTemplateFromModal(){
+  const name=(document.getElementById('gQuickName')?.value||'').trim();
+  const type=document.getElementById('gQuickType')?.value||'fijo';
+  let category=document.getElementById('gQuickCategory')?.value||'';
+
+  if(!name){
+    alert('Escribe el nombre del acceso rápido.');
+    document.getElementById('gQuickName')?.focus();
+    return;
+  }
+
+  if(norm(category)==='otro'){
+    category=(document.getElementById('gQuickOtherCategory')?.value||'').trim();
+    if(!category){
+      alert('Escribe la nueva categoría.');
+      document.getElementById('gQuickOtherCategory')?.focus();
+      return;
+    }
+  }
 
   const template={
-    name:name.trim(),
+    name,
     type,
-    category:category.trim(),
-    description:name.trim(),
+    category,
+    description:name,
     paymentMethod:'Efectivo',
     creditCard:''
   };
+
   const list=getQuickTemplates();
   list.push(template);
   saveQuickTemplates(list);
-  saveCategories(type,[...getCategories(type),template.category]);
+
+  // Si fue una categoría nueva, queda disponible desde ahora en el catálogo.
+  saveCategories(type,[...getCategories(type),category]);
+
   renderQuickTemplates();
   fillFilterCategories();
+  closeQuickTemplateModal();
 }
 function deleteQuickTemplate(index){
   const list=getQuickTemplates();
@@ -232,7 +354,7 @@ function renderQuickTemplates(){
       deleteQuickTemplate(Number(btn.dataset.deleteQuick));
     });
   });
-  document.getElementById('gAddQuickTemplate')?.addEventListener('click',addQuickTemplate);
+  document.getElementById('gAddQuickTemplate')?.addEventListener('click',openQuickTemplateModal);
 }
 function fillCreditCards(selected=''){
   const sel=document.getElementById('gCreditCard');
@@ -333,6 +455,23 @@ function injectStyles(){
     #gastos .g-fixed-delete{position:absolute;right:6px;top:4px;color:#98a2b3;font-size:13px}
     #gastos .g-fixed-delete:hover{color:#b42318}
     #gastos .g-fixed-add{border-style:dashed}
+    .g-quick-overlay{
+      position:fixed;inset:0;background:rgba(15,23,42,.38);display:none;
+      align-items:center;justify-content:center;padding:18px;z-index:9999
+    }
+    .g-quick-overlay.show{display:flex}
+    .g-quick-modal{
+      width:min(620px,100%);background:#fff;border:1px solid #e4e7ec;
+      border-radius:16px;box-shadow:0 24px 70px rgba(15,23,42,.22);overflow:hidden
+    }
+    .g-quick-modal-head{
+      padding:16px 18px;border-bottom:1px solid #e4e7ec;
+      display:flex;justify-content:space-between;gap:12px;align-items:flex-start
+    }
+    .g-quick-modal-head h3{margin:0 0 4px;font-size:16px}
+    .g-quick-modal-head p{margin:0;color:#667085;font-size:11px}
+    .g-quick-modal-body{padding:18px}
+
 
     #gastos .g-tab{border:1px solid #d0d5dd;background:#fff;color:#344054;border-radius:10px;padding:9px 14px;font-size:11px;font-weight:800;cursor:pointer}
     #gastos .g-tab.active{background:#eff4ff;border-color:#b2ccff;color:#155eef}
