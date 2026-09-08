@@ -1,6 +1,8 @@
 let gastosDB=null;
 let editingGastoId=null;
-let gastoViewType='corriente';
+let gastoViewType='todos';
+let gastoFormType='corriente';
+let gastoMainView='capture';
 let gastoSort={key:'date',dir:'desc'};
 
 const GASTOS_DB='FinoFinanzaGastosDB';
@@ -909,6 +911,13 @@ function injectStyles(){
   s.textContent=`
     #gastos .g-wrap{display:grid;gap:14px}
     #gastos .g-tabs{display:flex;gap:7px;flex-wrap:wrap}
+    #gastos .g-main-tabs{display:flex;gap:6px;padding:5px;background:#f2f4f7;border:1px solid #e4e7ec;border-radius:13px;width:max-content;max-width:100%}
+    #gastos .g-main-tab{border:0;background:transparent;color:#667085;border-radius:9px;padding:9px 14px;font-size:11px;font-weight:900;cursor:pointer;white-space:nowrap}
+    #gastos .g-main-tab.active{background:#fff;color:#155eef;box-shadow:0 1px 3px rgba(16,24,40,.10)}
+    #gastos .g-main-pane{display:none;gap:14px}
+    #gastos .g-main-pane.active{display:grid}
+    #gastos .g-history-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+
     #gastos .g-fixed-section{background:#fff;border:1px solid #b2ccff;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
     #gastos .g-fixed-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}
     #gastos .g-fixed-title h3{margin:0;font-size:14px}
@@ -1076,24 +1085,16 @@ function renderShell(){
     </div>
 
     <div class="g-wrap">
-      <div class="g-tabs">
-        <button class="g-tab" data-gtype="fijo">Fijos</button>
-        <button class="g-tab active" data-gtype="corriente">Corrientes</button>
-        <button class="g-tab" data-gtype="manutencion">Manutención</button>
-        <button class="g-tab" id="gAllTab" data-gtype="todos">Todos</button>
+      <div class="g-main-tabs" role="tablist" aria-label="Vistas de gastos">
+        <button class="g-main-tab active" type="button" data-gmain="capture">＋ Registrar gasto</button>
+        <button class="g-main-tab" type="button" data-gmain="history">≡ Historial</button>
       </div>
 
+      <div class="g-main-pane active" id="gCapturePane" data-gpane="capture">
       <details class="g-disclosure" id="gQuickSection">
         <summary><span class="g-disclosure-copy"><strong>Gastos rápidos</strong><small>Accesos para servicios y gastos frecuentes.</small></span></summary>
         <div class="g-disclosure-body"><div class="g-fixed-grid" id="gQuickTemplates"></div></div>
       </details>
-
-      <div class="g-summary">
-        <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
-        <div class="g-stat"><small>Fijos</small><strong id="gFixedTotal">$0.00</strong></div>
-        <div class="g-stat current"><small>Corrientes</small><strong id="gCurrentTotal">$0.00</strong></div>
-        <div class="g-stat"><small>Manutención</small><strong id="gMaintenanceTotal">$0.00</strong></div>
-      </div>
 
       <section class="g-card">
         <div class="g-head">
@@ -1241,6 +1242,24 @@ function renderShell(){
           </div>
         </div>
       </details>
+      </div>
+
+      <div class="g-main-pane" id="gHistoryPane" data-gpane="history">
+        <div class="g-summary">
+          <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
+          <div class="g-stat"><small>Fijos</small><strong id="gFixedTotal">$0.00</strong></div>
+          <div class="g-stat current"><small>Corrientes</small><strong id="gCurrentTotal">$0.00</strong></div>
+          <div class="g-stat"><small>Manutención</small><strong id="gMaintenanceTotal">$0.00</strong></div>
+        </div>
+
+        <div class="g-history-toolbar">
+          <div class="g-tabs">
+            <button class="g-tab" data-gtype="fijo">Fijos</button>
+            <button class="g-tab" data-gtype="corriente">Corrientes</button>
+            <button class="g-tab" data-gtype="manutencion">Manutención</button>
+            <button class="g-tab active" id="gAllTab" data-gtype="todos">Todos</button>
+          </div>
+        </div>
 
       <section class="g-card">
         <div class="g-head">
@@ -1288,6 +1307,7 @@ function renderShell(){
           </div>
         </div>
       </section>
+      </div>
     </div>
   `;
 }
@@ -1346,15 +1366,23 @@ function fillFilterCategories(){
 }
 function setFormType(type,preserveCategory=false){
   if(!['fijo','corriente','manutencion'].includes(type))type='corriente';
-  gastoViewType=type;
+  gastoFormType=type;
   const typeSel=document.getElementById('gType');
   if(typeSel)typeSel.value=type;
   fillCategories(type,preserveCategory?document.getElementById('gCategory')?.value:'');
   const title=document.getElementById('gFormTitle');
   if(title)title.textContent=`Registrar gasto ${type==='manutencion'?'de manutención':type}`;
-  document.querySelectorAll('#gastos .g-tab[data-gtype]').forEach(btn=>{
-    btn.classList.toggle('active',btn.dataset.gtype===type);
+}
+
+function switchGastoMainView(view){
+  gastoMainView=view==='history'?'history':'capture';
+  document.querySelectorAll('#gastos [data-gmain]').forEach(btn=>{
+    btn.classList.toggle('active',btn.dataset.gmain===gastoMainView);
   });
+  document.querySelectorAll('#gastos [data-gpane]').forEach(pane=>{
+    pane.classList.toggle('active',pane.dataset.gpane===gastoMainView);
+  });
+  if(gastoMainView==='history')renderHistory();
 }
 
 function addPerson(){
@@ -1381,7 +1409,7 @@ function resetForm(){
   editingGastoId=null;
   document.getElementById('gastoForm')?.reset();
   fillPeople();
-  setFormType(gastoViewType==='todos'?'corriente':gastoViewType);
+  setFormType(gastoFormType);
   document.getElementById('gDate').value=today();
   updatePaymentUI();
   const payDetails=document.getElementById('gPaymentDetails');
@@ -1432,6 +1460,7 @@ async function saveGasto(e){
 async function editGasto(id){
   const item=await dbGet(id);
   if(!item)return;
+  switchGastoMainView('capture');
   editingGastoId=id;
   if(!isFamilyMode() && item.person){
     savePeople([...getPeople(),item.person]);
@@ -1571,6 +1600,10 @@ function bindEvents(){
     wrap.style.display=wrap.style.display==='block'?'none':'block';
   });
 
+  document.querySelectorAll('#gastos [data-gmain]').forEach(btn=>{
+    btn.addEventListener('click',()=>switchGastoMainView(btn.dataset.gmain));
+  });
+
   document.getElementById('gType').addEventListener('change',e=>setFormType(e.target.value));
   document.getElementById('gPayment').addEventListener('change',()=>updatePaymentUI());
 
@@ -1579,7 +1612,6 @@ function bindEvents(){
       const type=btn.dataset.gtype;
       gastoViewType=type;
       document.querySelectorAll('#gastos .g-tab').forEach(x=>x.classList.toggle('active',x===btn));
-      if(type!=='todos')setFormType(type);
       renderHistory();
     });
   });
@@ -1613,6 +1645,7 @@ export async function initGastos(){
   updatePaymentUI();
   renderQuickTemplates();
   bindEvents();
+  switchGastoMainView('capture');
 
   try{
     await openGastosDB();
