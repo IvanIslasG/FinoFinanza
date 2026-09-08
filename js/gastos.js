@@ -89,33 +89,83 @@ function parseHsbcDate(raw='',year=2026){
   return `${m[3]}-${mon}-${String(m[1]).padStart(2,'0')}`;
 }
 
+const STATEMENT_CONCEPT_RULES=[
+  {tokens:['spotify'],concept:'Spotify',type:'fijo',category:'Suscripciones'},
+  {tokens:['netflix'],concept:'Netflix',type:'fijo',category:'Suscripciones'},
+  {tokens:['openai','chatgpt'],concept:'ChatGPT',type:'fijo',category:'Suscripciones'},
+  {tokens:['telcel'],concept:'Telcel',type:'fijo',category:'Telefonía'},
+  {tokens:['walmart','wal mart'],concept:'Walmart',type:'corriente',category:'Supermercado'},
+  {tokens:['bodega aurrera','aurrera'],concept:'Bodega Aurrera',type:'corriente',category:'Supermercado'},
+  {tokens:['soriana'],concept:'Soriana',type:'corriente',category:'Supermercado'},
+  {tokens:['chedraui'],concept:'Chedraui',type:'corriente',category:'Supermercado'},
+  {tokens:['costco'],concept:'Costco',type:'corriente',category:'Supermercado'},
+  {tokens:['sams club','sam s club'],concept:"Sam's Club",type:'corriente',category:'Supermercado'},
+  {tokens:['oxxo'],concept:'OXXO',type:'corriente',category:'Otro'},
+  {tokens:['pemex'],concept:'Pemex',type:'corriente',category:'Gasolina'},
+  {tokens:['bp '],concept:'BP',type:'corriente',category:'Gasolina'},
+  {tokens:['mobil'],concept:'Mobil',type:'corriente',category:'Gasolina'},
+  {tokens:['shell'],concept:'Shell',type:'corriente',category:'Gasolina'},
+  {tokens:['uber'],concept:'Uber',type:'corriente',category:'Transporte'},
+  {tokens:['didi'],concept:'DiDi',type:'corriente',category:'Transporte'},
+  {tokens:['cinemex'],concept:'Cinemex',type:'corriente',category:'Entretenimiento'},
+  {tokens:['cinepolis','cinépolis'],concept:'Cinépolis',type:'corriente',category:'Entretenimiento'},
+  {tokens:['farmacias del ahorro','farmacia del ahorro'],concept:'Farmacias del Ahorro',type:'corriente',category:'Salud / Farmacia'},
+  {tokens:['farmacia guadalajara'],concept:'Farmacia Guadalajara',type:'corriente',category:'Salud / Farmacia'},
+  {tokens:['starbucks'],concept:'Starbucks',type:'corriente',category:'Comida fuera'},
+  {tokens:['appleb'],concept:"Applebee's",type:'corriente',category:'Comida fuera'}
+];
+
+function cleanStatementConcept(description=''){
+  const original=String(description||'').trim();
+  const d=norm(original);
+
+  for(const rule of STATEMENT_CONCEPT_RULES){
+    if(rule.tokens.some(token=>d.includes(norm(token)))){
+      return {...rule};
+    }
+  }
+
+  let concept=original
+    .replace(/\*+/g,' ')
+    .replace(/\b(?:MXN|MEX|MEXICO|MÉXICO)\b/gi,' ')
+    .replace(/\b\d{5,}\b/g,' ')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+
+  if(!concept)concept=original||'Movimiento';
+  if(concept.length>46)concept=concept.slice(0,46).trim();
+
+  return {concept,type:'corriente',category:'Otro'};
+}
+
 function classifyHsbcMovement(description='',signedAmount=0){
   const d=norm(description);
   if(d.includes('su pago')||d.includes('pago gracias')||signedAmount<0){
-    return {kind:'payment',importable:false,type:'',category:'',reason:'Pago/abono: no es gasto nuevo'};
+    return {kind:'payment',importable:false,type:'',category:'',concept:'Pago de tarjeta',reason:'Pago/abono: no es gasto nuevo'};
   }
   if(d.includes('intereses')||d.includes('iva sobre comisiones')||d.includes('iva promocion')){
-    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',reason:'Cargo financiero: revisar antes de importar'};
+    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',concept:'Cargo financiero',reason:'Cargo financiero: revisar antes de importar'};
   }
 
-  let type='corriente',category='Otro';
-  if(d.includes('spotify')||d.includes('netflix')||d.includes('chatgpt')){
-    type='fijo'; category='Suscripciones';
-  }else if(d.includes('gasol')||d.includes('gaso')||d.includes('pemex')){
-    category='Gasolina';
-  }else if(d.includes('mercado')||d.includes('walmart')||d.includes('bodega')||d.includes('chedraui')||d.includes('soriana')){
-    category='Supermercado';
-  }else if(d.includes('tacos')||d.includes('appleb')||d.includes('restaurant')||d.includes('cafe')||d.includes('comida')){
-    category='Comida fuera';
-  }else if(d.includes('cine')||d.includes('cinemex')||d.includes('cinepolis')){
-    category='Entretenimiento';
-  }else if(d.includes('dulcer')||d.includes('pastel')||d.includes('frutas')||d.includes('helado')){
-    category='Comida fuera';
-  }else if(d.includes('clinica')||d.includes('farm')||d.includes('doctor')){
-    category='Salud / Farmacia';
+  const normalized=cleanStatementConcept(description);
+  let type=normalized.type||'corriente';
+  let category=normalized.category||'Otro';
+
+  if(category==='Otro'){
+    if(d.includes('gasol')||d.includes('gaso')){
+      category='Gasolina';
+    }else if(d.includes('mercado')){
+      category='Supermercado';
+    }else if(d.includes('tacos')||d.includes('restaurant')||d.includes('cafe')||d.includes('comida')||d.includes('dulcer')||d.includes('pastel')||d.includes('frutas')||d.includes('helado')){
+      category='Comida fuera';
+    }else if(d.includes('cine')){
+      category='Entretenimiento';
+    }else if(d.includes('clinica')||d.includes('farm')||d.includes('doctor')){
+      category='Salud / Farmacia';
+    }
   }
 
-  return {kind:'purchase',importable:true,type,category,reason:'Compra regular'};
+  return {kind:'purchase',importable:true,type,category,concept:normalized.concept,reason:'Compra regular'};
 }
 
 function extractHsbcMovementsFromOCR(text=''){
@@ -139,7 +189,8 @@ function extractHsbcMovementsFromOCR(text=''){
     rows.push({
       operationDate:parseHsbcDate(m[1]),
       chargeDate:parseHsbcDate(m[2]),
-      description:m[3].trim(),
+      originalDescription:m[3].trim(),
+      description:classification.concept||m[3].trim(),
       amount:Math.abs(amount),
       signedAmount,
       ...classification,
@@ -151,7 +202,7 @@ function extractHsbcMovementsFromOCR(text=''){
   // Deduplicate OCR echoes.
   const seen=new Set();
   return rows.filter(r=>{
-    const key=[r.operationDate,r.chargeDate,norm(r.description),r.signedAmount].join('|');
+    const key=[r.operationDate,r.chargeDate,norm(r.originalDescription||r.description),r.signedAmount].join('|');
     if(seen.has(key))return false;
     seen.add(key);
     return true;
@@ -298,7 +349,10 @@ function renderStatementPreview(){
       <td>${fmtDate(r.operationDate)}</td>
       <td>${fmtDate(r.chargeDate)}</td>
       <td>
-        <strong>${esc(r.description)}</strong>
+        ${r.importable
+          ? `<input class="g-statement-concept" data-st-concept="${i}" type="text" value="${esc(r.description)}" aria-label="Concepto simplificado">`
+          : `<strong>${esc(r.description)}</strong>`}
+        ${r.originalDescription?`<br><small class="g-original-desc" title="Descripción original del banco">${esc(r.originalDescription)}</small>`:''}
         <br><small>${esc(r.reason)}</small>
       </td>
       <td>
@@ -320,6 +374,12 @@ function renderStatementPreview(){
   body.querySelectorAll('[data-st-check]').forEach(el=>{
     el.addEventListener('change',()=>statementMovements[Number(el.dataset.stCheck)].selected=el.checked);
   });
+  body.querySelectorAll('[data-st-concept]').forEach(el=>{
+    el.addEventListener('input',()=>{
+      const i=Number(el.dataset.stConcept);
+      statementMovements[i].description=el.value.trim();
+    });
+  });
   body.querySelectorAll('[data-st-type]').forEach(el=>{
     el.addEventListener('change',()=>{
       const i=Number(el.dataset.stType);
@@ -338,7 +398,7 @@ function renderStatementPreview(){
   const purchases=statementMovements.filter(x=>x.importable).length;
   const excluded=statementMovements.length-purchases;
   document.getElementById('gStatementSummary').textContent=
-    `${purchases} compras importables · ${excluded} movimientos excluidos/revisión`;
+    `${purchases} compras con concepto simplificado · ${excluded} movimientos excluidos/revisión`;
 }
 
 async function importSelectedStatementMovements(){
@@ -364,7 +424,7 @@ async function importSelectedStatementMovements(){
     const duplicate=existing.some(x=>
       x.date===r.operationDate &&
       Math.abs(Number(x.amount||0)-Number(r.amount||0))<0.01 &&
-      norm(x.description)===norm(r.description) &&
+      norm(x.originalDescription||x.description)===norm(r.originalDescription||r.description) &&
       norm(x.creditCard||'')===norm(card)
     );
     if(duplicate){skipped++;continue}
@@ -374,7 +434,8 @@ async function importSelectedStatementMovements(){
       type:r.type,
       category:r.category||'Otro',
       date:r.operationDate||r.chargeDate||today(),
-      description:r.description,
+      description:r.description||cleanStatementConcept(r.originalDescription||'').concept,
+      originalDescription:r.originalDescription||'',
       amount:Number(r.amount||0),
       paymentMethod:'Tarjeta de crédito',
       creditCard:card,
@@ -929,6 +990,8 @@ function injectStyles(){
     #gastos .g-statement-status[data-kind="warn"]{background:#fffaeb;border-color:#fedf89;color:#b54708}
     #gastos .g-statement-preview{margin-top:14px}
     #gastos .g-statement-preview select{max-width:180px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;background:#fff;font-size:10px}
+    #gastos .g-statement-concept{width:min(230px,100%);box-sizing:border-box;border:1px solid #d0d5dd;border-radius:8px;padding:6px 7px;background:#fff;color:#101828;font-size:11px;font-weight:800}
+    #gastos .g-original-desc{display:inline-block;max-width:260px;color:#98a2b3;font-size:9px;line-height:1.35;margin-top:3px}
     #gastos .g-statement-muted{opacity:.58;background:#f8fafc}
     #gastos .g-statement-debug{display:none;margin-top:12px}
     #gastos .g-statement-debug textarea{width:100%;min-height:150px;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:10px;padding:10px;font:10px ui-monospace,monospace}
@@ -1064,7 +1127,7 @@ function renderShell(){
         <div class="g-head">
           <div>
             <h3>Lector de estados de cuenta</h3>
-            <small>Primera versión: HSBC 2Now · OCR local · revisión antes de importar.</small>
+            <small>HSBC 2Now · OCR local · conceptos simplificados · revisión antes de importar.</small>
           </div>
         </div>
         <div class="g-body">
@@ -1115,7 +1178,7 @@ function renderShell(){
                     <th></th>
                     <th>Operación</th>
                     <th>Cargo</th>
-                    <th>Movimiento</th>
+                    <th>Concepto</th>
                     <th>Tipo</th>
                     <th>Categoría</th>
                     <th>Monto</th>
@@ -1388,7 +1451,7 @@ async function renderHistory(){
     if(f.from&&String(x.date||'')<f.from)return false;
     if(f.to&&String(x.date||'')>f.to)return false;
     if(f.q){
-      const hay=norm([personLabel(x.person),x.category,x.description,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
+      const hay=norm([personLabel(x.person),x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
       if(!hay.includes(f.q))return false;
     }
     return true;
@@ -1410,7 +1473,7 @@ async function renderHistory(){
       <td>${esc(personLabel(x.person))}</td>
       <td><span class="g-type ${esc(x.type)}">${esc(typeLabel(x.type))}</span></td>
       <td>${esc(x.category)}</td>
-      <td><strong>${esc(x.description)}</strong>${x.account?`<br><small>${esc(x.account)}</small>`:''}</td>
+      <td><strong>${esc(x.description)}</strong>${x.originalDescription?`<br><small class="g-original-desc">${esc(x.originalDescription)}</small>`:''}${x.account?`<br><small>${esc(x.account)}</small>`:''}</td>
       <td>${esc(x.paymentMethod||'—')}${x.creditCard?`<br><small>${esc(x.creditCard)}</small>`:''}</td>
       <td class="g-money">${money(x.amount)}</td>
       <td>
