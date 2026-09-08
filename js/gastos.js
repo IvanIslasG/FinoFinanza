@@ -12,6 +12,7 @@ const CAT_PREFIX='finoFinanza.gastoCategorias.';
 const CREDIT_CARDS_KEY='finoFinanza.creditCards';
 const QUICK_TEMPLATES_KEY='finoFinanza.quickExpenseTemplates';
 const LEGACY_FIXED_TEMPLATES_KEY='finoFinanza.fixedExpenseTemplates';
+const STATEMENT_RULES_KEY='finoFinanza.statementMerchantRules';
 
 const BASE_CATEGORIES={
   fijo:[
@@ -89,53 +90,87 @@ function parseHsbcDate(raw='',year=2026){
   return `${m[3]}-${mon}-${String(m[1]).padStart(2,'0')}`;
 }
 
-const STATEMENT_CONCEPT_RULES=[
-  {tokens:['spotify'],concept:'Spotify',type:'fijo',category:'Suscripciones'},
-  {tokens:['netflix'],concept:'Netflix',type:'fijo',category:'Suscripciones'},
-  {tokens:['openai','chatgpt'],concept:'ChatGPT',type:'fijo',category:'Suscripciones'},
-  {tokens:['telcel'],concept:'Telcel',type:'fijo',category:'Telefonía'},
-  {tokens:['walmart','wal mart'],concept:'Walmart',type:'corriente',category:'Supermercado'},
-  {tokens:['bodega aurrera','aurrera'],concept:'Bodega Aurrera',type:'corriente',category:'Supermercado'},
-  {tokens:['soriana'],concept:'Soriana',type:'corriente',category:'Supermercado'},
-  {tokens:['chedraui'],concept:'Chedraui',type:'corriente',category:'Supermercado'},
-  {tokens:['costco'],concept:'Costco',type:'corriente',category:'Supermercado'},
-  {tokens:['sams club','sam s club'],concept:"Sam's Club",type:'corriente',category:'Supermercado'},
-  {tokens:['oxxo'],concept:'OXXO',type:'corriente',category:'Otro'},
-  {tokens:['pemex'],concept:'Pemex',type:'corriente',category:'Gasolina'},
-  {tokens:['bp '],concept:'BP',type:'corriente',category:'Gasolina'},
-  {tokens:['mobil'],concept:'Mobil',type:'corriente',category:'Gasolina'},
-  {tokens:['shell'],concept:'Shell',type:'corriente',category:'Gasolina'},
-  {tokens:['uber'],concept:'Uber',type:'corriente',category:'Transporte'},
-  {tokens:['didi'],concept:'DiDi',type:'corriente',category:'Transporte'},
-  {tokens:['cinemex'],concept:'Cinemex',type:'corriente',category:'Entretenimiento'},
-  {tokens:['cinepolis','cinépolis'],concept:'Cinépolis',type:'corriente',category:'Entretenimiento'},
-  {tokens:['farmacias del ahorro','farmacia del ahorro'],concept:'Farmacias del Ahorro',type:'corriente',category:'Salud / Farmacia'},
-  {tokens:['farmacia guadalajara'],concept:'Farmacia Guadalajara',type:'corriente',category:'Salud / Farmacia'},
-  {tokens:['starbucks'],concept:'Starbucks',type:'corriente',category:'Comida fuera'},
-  {tokens:['appleb'],concept:"Applebee's",type:'corriente',category:'Comida fuera'}
+const BUILTIN_STATEMENT_RULES=[
+  {match:['spotify'],concept:'Spotify',type:'fijo',category:'Suscripciones'},
+  {match:['netflix'],concept:'Netflix',type:'fijo',category:'Suscripciones'},
+  {match:['openai','chatgpt'],concept:'ChatGPT',type:'fijo',category:'Suscripciones'},
+  {match:['telcel'],concept:'Telcel',type:'fijo',category:'Telefonía'},
+  {match:['walmart','wal mart'],concept:'Walmart',type:'corriente',category:'Supermercado'},
+  {match:['bodega aurrera','aurrera'],concept:'Bodega Aurrera',type:'corriente',category:'Supermercado'},
+  {match:['soriana'],concept:'Soriana',type:'corriente',category:'Supermercado'},
+  {match:['chedraui'],concept:'Chedraui',type:'corriente',category:'Supermercado'},
+  {match:['costco'],concept:'Costco',type:'corriente',category:'Supermercado'},
+  {match:['cinemex'],concept:'Cinemex',type:'corriente',category:'Entretenimiento'},
+  {match:['cinepolis','cinépolis'],concept:'Cinépolis',type:'corriente',category:'Entretenimiento'},
+  {match:['uber'],concept:'Uber',type:'corriente',category:'Transporte'},
+  {match:['didi'],concept:'DiDi',type:'corriente',category:'Transporte'},
+  {match:['farmacias del ahorro','farmacia del ahorro'],concept:'Farmacias del Ahorro',type:'corriente',category:'Salud / Farmacia'},
+  {match:['farmacia guadalajara'],concept:'Farmacia Guadalajara',type:'corriente',category:'Salud / Farmacia'},
+  {match:['starbucks'],concept:'Starbucks',type:'corriente',category:'Comida fuera'},
+  {match:['appleb'],concept:"Applebee's",type:'corriente',category:'Comida fuera'}
 ];
 
-function cleanStatementConcept(description=''){
-  const original=String(description||'').trim();
-  const d=norm(original);
+function statementSignature(description=''){
+  const stop=new Set(['mex','mexico','pue','puebla','mx','compra','venta','pos','terminal','tarjeta']);
+  const parts=norm(description)
+    .replace(/\b\d{3,}\b/g,' ')
+    .replace(/[^a-z0-9ñ ]+/g,' ')
+    .split(/\s+/)
+    .filter(x=>x&&x.length>1&&!stop.has(x));
+  return parts.slice(0,6).join(' ').trim();
+}
 
-  for(const rule of STATEMENT_CONCEPT_RULES){
-    if(rule.tokens.some(token=>d.includes(norm(token)))){
-      return {...rule};
-    }
-  }
-
-  let concept=original
+function getStatementRules(){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(STATEMENT_RULES_KEY)||'[]');
+    return Array.isArray(parsed)?parsed.filter(x=>x&&x.signature&&x.concept):[];
+  }catch{return []}
+}
+function saveStatementRules(rules){
+  localStorage.setItem(STATEMENT_RULES_KEY,JSON.stringify(rules.slice(-500)));
+}
+function rememberStatementRule(movement){
+  if(!movement?.originalDescription||!movement?.importable)return;
+  const signature=statementSignature(movement.originalDescription);
+  if(!signature)return;
+  const rule={
+    signature,
+    concept:String(movement.description||'').trim()||genericStatementConcept(movement.originalDescription),
+    type:movement.type||'corriente',
+    category:movement.category||'Otro',
+    updatedAt:new Date().toISOString()
+  };
+  const rules=getStatementRules();
+  const idx=rules.findIndex(x=>x.signature===signature);
+  if(idx>=0)rules[idx]=rule; else rules.push(rule);
+  saveStatementRules(rules);
+}
+function findStatementRule(description=''){
+  const d=norm(description);
+  const signature=statementSignature(description);
+  const custom=getStatementRules()
+    .filter(r=>signature===r.signature || (r.signature.length>=6&&d.includes(r.signature)))
+    .sort((a,b)=>b.signature.length-a.signature.length)[0];
+  if(custom)return {...custom,source:'learned'};
+  const builtin=BUILTIN_STATEMENT_RULES.find(rule=>rule.match.some(token=>d.includes(norm(token))));
+  if(builtin)return {...builtin,source:'builtin'};
+  return null;
+}
+function titleCaseMerchant(value=''){
+  const keep=new Set(['OXXO','BP','HSBC','BBVA','KFC','VIPS','CFE']);
+  return String(value).split(/\s+/).filter(Boolean).map(w=>{
+    const u=w.toUpperCase();
+    return keep.has(u)?u:w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
+  }).join(' ');
+}
+function genericStatementConcept(description=''){
+  let s=String(description)
     .replace(/\*+/g,' ')
-    .replace(/\b(?:MXN|MEX|MEXICO|MÉXICO)\b/gi,' ')
-    .replace(/\b\d{5,}\b/g,' ')
+    .replace(/\b(?:MXN|MEX|MEXICO|MÉXICO|PUE|PUEBLA)\b/gi,' ')
+    .replace(/\b\d{3,}\b/g,' ')
     .replace(/\s{2,}/g,' ')
     .trim();
-
-  if(!concept)concept=original||'Movimiento';
-  if(concept.length>46)concept=concept.slice(0,46).trim();
-
-  return {concept,type:'corriente',category:'Otro'};
+  return titleCaseMerchant(s||description||'Movimiento');
 }
 
 function classifyHsbcMovement(description='',signedAmount=0){
@@ -144,28 +179,22 @@ function classifyHsbcMovement(description='',signedAmount=0){
     return {kind:'payment',importable:false,type:'',category:'',concept:'Pago de tarjeta',reason:'Pago/abono: no es gasto nuevo'};
   }
   if(d.includes('intereses')||d.includes('iva sobre comisiones')||d.includes('iva promocion')){
-    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',concept:'Cargo financiero',reason:'Cargo financiero: revisar antes de importar'};
+    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',concept:genericStatementConcept(description),reason:'Cargo financiero: revisar antes de importar'};
   }
 
-  const normalized=cleanStatementConcept(description);
-  let type=normalized.type||'corriente';
-  let category=normalized.category||'Otro';
-
-  if(category==='Otro'){
-    if(d.includes('gasol')||d.includes('gaso')){
-      category='Gasolina';
-    }else if(d.includes('mercado')){
-      category='Supermercado';
-    }else if(d.includes('tacos')||d.includes('restaurant')||d.includes('cafe')||d.includes('comida')||d.includes('dulcer')||d.includes('pastel')||d.includes('frutas')||d.includes('helado')){
-      category='Comida fuera';
-    }else if(d.includes('cine')){
-      category='Entretenimiento';
-    }else if(d.includes('clinica')||d.includes('farm')||d.includes('doctor')){
-      category='Salud / Farmacia';
-    }
+  const rule=findStatementRule(description);
+  if(rule){
+    return {kind:'purchase',importable:true,concept:rule.concept,type:rule.type,category:rule.category,reason:rule.source==='learned'?'Clasificación aprendida':'Clasificación automática'};
   }
 
-  return {kind:'purchase',importable:true,type,category,concept:normalized.concept,reason:'Compra regular'};
+  let type='corriente',category='Otro';
+  if(d.includes('gasol')||d.includes('gaso')||d.includes('pemex'))category='Gasolina';
+  else if(d.includes('mercado'))category='Supermercado';
+  else if(d.includes('tacos')||d.includes('restaurant')||d.includes('cafe')||d.includes('comida')||d.includes('dulcer')||d.includes('pastel')||d.includes('frutas')||d.includes('helado'))category='Comida fuera';
+  else if(d.includes('cine'))category='Entretenimiento';
+  else if(d.includes('clinica')||d.includes('farm')||d.includes('doctor'))category='Salud / Farmacia';
+
+  return {kind:'purchase',importable:true,concept:genericStatementConcept(description),type,category,reason:'Compra regular'};
 }
 
 function extractHsbcMovementsFromOCR(text=''){
@@ -190,7 +219,7 @@ function extractHsbcMovementsFromOCR(text=''){
       operationDate:parseHsbcDate(m[1]),
       chargeDate:parseHsbcDate(m[2]),
       originalDescription:m[3].trim(),
-      description:classification.concept||m[3].trim(),
+      description:classification.concept||genericStatementConcept(m[3]),
       amount:Math.abs(amount),
       signedAmount,
       ...classification,
@@ -349,9 +378,7 @@ function renderStatementPreview(){
       <td>${fmtDate(r.operationDate)}</td>
       <td>${fmtDate(r.chargeDate)}</td>
       <td>
-        ${r.importable
-          ? `<input class="g-statement-concept" data-st-concept="${i}" type="text" value="${esc(r.description)}" aria-label="Concepto simplificado">`
-          : `<strong>${esc(r.description)}</strong>`}
+        ${r.importable?`<input class="g-statement-concept" data-st-concept="${i}" value="${esc(r.description)}" aria-label="Concepto simplificado">`:`<strong>${esc(r.description)}</strong>`}
         ${r.originalDescription?`<br><small class="g-original-desc" title="Descripción original del banco">${esc(r.originalDescription)}</small>`:''}
         <br><small>${esc(r.reason)}</small>
       </td>
@@ -375,9 +402,11 @@ function renderStatementPreview(){
     el.addEventListener('change',()=>statementMovements[Number(el.dataset.stCheck)].selected=el.checked);
   });
   body.querySelectorAll('[data-st-concept]').forEach(el=>{
-    el.addEventListener('input',()=>{
+    el.addEventListener('change',()=>{
       const i=Number(el.dataset.stConcept);
-      statementMovements[i].description=el.value.trim();
+      statementMovements[i].description=el.value.trim()||statementMovements[i].description;
+      rememberStatementRule(statementMovements[i]);
+      statementMovements[i].reason='Clasificación aprendida';
     });
   });
   body.querySelectorAll('[data-st-type]').forEach(el=>{
@@ -385,6 +414,8 @@ function renderStatementPreview(){
       const i=Number(el.dataset.stType);
       statementMovements[i].type=el.value;
       statementMovements[i].category=getCategories(el.value)[0]||'Otro';
+      rememberStatementRule(statementMovements[i]);
+      statementMovements[i].reason='Clasificación aprendida';
       renderStatementPreview();
     });
   });
@@ -392,13 +423,15 @@ function renderStatementPreview(){
     el.addEventListener('change',()=>{
       const i=Number(el.dataset.stCat);
       statementMovements[i].category=el.value;
+      rememberStatementRule(statementMovements[i]);
+      statementMovements[i].reason='Clasificación aprendida';
     });
   });
 
   const purchases=statementMovements.filter(x=>x.importable).length;
   const excluded=statementMovements.length-purchases;
   document.getElementById('gStatementSummary').textContent=
-    `${purchases} compras con concepto simplificado · ${excluded} movimientos excluidos/revisión`;
+    `${purchases} compras importables · ${excluded} movimientos excluidos/revisión`;
 }
 
 async function importSelectedStatementMovements(){
@@ -434,7 +467,7 @@ async function importSelectedStatementMovements(){
       type:r.type,
       category:r.category||'Otro',
       date:r.operationDate||r.chargeDate||today(),
-      description:r.description||cleanStatementConcept(r.originalDescription||'').concept,
+      description:r.description,
       originalDescription:r.originalDescription||'',
       amount:Number(r.amount||0),
       paymentMethod:'Tarjeta de crédito',
@@ -748,6 +781,8 @@ function useQuickTemplate(index){
   fillCategories(t.type,t.category);
   document.getElementById('gDescription').value=t.description||t.name||'';
   document.getElementById('gPayment').value=t.paymentMethod||'Efectivo';
+  const payDetails=document.getElementById('gPaymentDetails');
+  if(payDetails && (t.paymentMethod!=='Efectivo'||t.creditCard))payDetails.open=true;
   updatePaymentUI(t.creditCard||'');
   document.getElementById('gDate').value=today();
   document.getElementById('gAmount').value='';
@@ -991,7 +1026,23 @@ function injectStyles(){
     #gastos .g-statement-preview{margin-top:14px}
     #gastos .g-statement-preview select{max-width:180px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;background:#fff;font-size:10px}
     #gastos .g-statement-concept{width:min(230px,100%);box-sizing:border-box;border:1px solid #d0d5dd;border-radius:8px;padding:6px 7px;background:#fff;color:#101828;font-size:11px;font-weight:800}
-    #gastos .g-original-desc{display:inline-block;max-width:260px;color:#98a2b3;font-size:9px;line-height:1.35;margin-top:3px}
+    #gastos .g-original-desc{color:#98a2b3;font-size:9px;line-height:1.35}
+    #gastos .g-disclosure{background:#fff;border:1px solid #e4e7ec;border-radius:16px;overflow:hidden}
+    #gastos .g-disclosure>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;cursor:pointer;font-weight:800;color:#101828}
+    #gastos .g-disclosure>summary::-webkit-details-marker{display:none}
+    #gastos .g-disclosure>summary::after{content:'＋';color:#667085;font-size:15px}
+    #gastos .g-disclosure[open]>summary::after{content:'−'}
+    #gastos .g-disclosure[open]>summary{border-bottom:1px solid #e4e7ec;background:#fcfcfd}
+    #gastos .g-disclosure .g-disclosure-copy{min-width:0}
+    #gastos .g-disclosure .g-disclosure-copy strong{display:block;font-size:13px}
+    #gastos .g-disclosure .g-disclosure-copy small{display:block;margin-top:3px;color:#667085;font-size:10px;font-weight:500}
+    #gastos .g-disclosure-body{padding:16px}
+    #gastos .g-form-section{margin-top:12px;border-top:1px solid #eef2f6;padding-top:12px}
+    #gastos .g-form-section>summary{cursor:pointer;color:#475467;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.03em}
+    #gastos .g-form-section[open]>summary{margin-bottom:12px}
+    #gastos .g-summary{gap:8px}
+    #gastos .g-stat{padding:11px 12px}
+    #gastos .g-stat strong{font-size:16px}
     #gastos .g-statement-muted{opacity:.58;background:#f8fafc}
     #gastos .g-statement-debug{display:none;margin-top:12px}
     #gastos .g-statement-debug textarea{width:100%;min-height:150px;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:10px;padding:10px;font:10px ui-monospace,monospace}
@@ -1032,15 +1083,10 @@ function renderShell(){
         <button class="g-tab" id="gAllTab" data-gtype="todos">Todos</button>
       </div>
 
-      <section class="g-fixed-section" id="gQuickSection">
-        <div class="g-fixed-title">
-          <div>
-            <h3>Gastos rápidos</h3>
-            <small>Elige un servicio o gasto frecuente; después completa fecha y monto.</small>
-          </div>
-        </div>
-        <div class="g-fixed-grid" id="gQuickTemplates"></div>
-      </section>
+      <details class="g-disclosure" id="gQuickSection">
+        <summary><span class="g-disclosure-copy"><strong>Gastos rápidos</strong><small>Accesos para servicios y gastos frecuentes.</small></span></summary>
+        <div class="g-disclosure-body"><div class="g-fixed-grid" id="gQuickTemplates"></div></div>
+      </details>
 
       <div class="g-summary">
         <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
@@ -1091,28 +1137,34 @@ function renderShell(){
                 <label>Monto</label>
                 <input id="gAmount" type="number" min="0.01" step="0.01" placeholder="0.00" required>
               </div>
-              <div class="g-field">
-                <label>Método de pago</label>
-                <select id="gPayment">${PAYMENT_METHODS.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
-              </div>
+            </div>
 
-              <div class="g-field" id="gCreditCardField" style="display:none">
-                <label>Tarjeta de crédito</label>
-                <div class="g-inline">
-                  <select id="gCreditCard"></select>
-                  <button class="g-plus" id="gAddCreditCard" type="button" title="Dar de alta tarjeta">＋</button>
+            <details class="g-form-section" id="gPaymentDetails">
+              <summary>Forma de pago y detalles adicionales</summary>
+              <div class="g-form-grid">
+                <div class="g-field">
+                  <label>Método de pago</label>
+                  <select id="gPayment">${PAYMENT_METHODS.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
+                </div>
+
+                <div class="g-field" id="gCreditCardField" style="display:none">
+                  <label>Tarjeta de crédito</label>
+                  <div class="g-inline">
+                    <select id="gCreditCard"></select>
+                    <button class="g-plus" id="gAddCreditCard" type="button" title="Dar de alta tarjeta">＋</button>
+                  </div>
+                </div>
+
+                <div class="g-field g-span2" id="gAccountField">
+                  <label>Cuenta / Medio (opcional)</label>
+                  <input id="gAccount" type="text" placeholder="Ej. BBVA débito, efectivo, transferencia...">
+                </div>
+                <div class="g-field g-span2">
+                  <label>Nota (opcional)</label>
+                  <textarea id="gNote" placeholder="Detalle adicional"></textarea>
                 </div>
               </div>
-
-              <div class="g-field g-span2" id="gAccountField">
-                <label>Cuenta / Medio (opcional)</label>
-                <input id="gAccount" type="text" placeholder="Ej. BBVA débito, efectivo, transferencia...">
-              </div>
-              <div class="g-field g-span2">
-                <label>Nota (opcional)</label>
-                <textarea id="gNote" placeholder="Detalle adicional"></textarea>
-              </div>
-            </div>
+            </details>
 
             <div class="g-actions">
               <button class="g-btn" id="gCancelEdit" type="button" style="display:none">Cancelar edición</button>
@@ -1123,14 +1175,9 @@ function renderShell(){
       </section>
 
 
-      <section class="g-card">
-        <div class="g-head">
-          <div>
-            <h3>Lector de estados de cuenta</h3>
-            <small>HSBC 2Now · OCR local · conceptos simplificados · revisión antes de importar.</small>
-          </div>
-        </div>
-        <div class="g-body">
+      <details class="g-disclosure" id="gStatementSection">
+        <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>HSBC 2Now · OCR local · conceptos simplificados y aprendizaje automático.</small></span></summary>
+        <div class="g-disclosure-body">
           <div class="g-statement-controls">
             <div class="g-field">
               <label>Perfil bancario</label>
@@ -1193,7 +1240,7 @@ function renderShell(){
             <textarea id="gStatementOcr" readonly placeholder="Texto OCR detectado"></textarea>
           </div>
         </div>
-      </section>
+      </details>
 
       <section class="g-card">
         <div class="g-head">
@@ -1337,6 +1384,8 @@ function resetForm(){
   setFormType(gastoViewType==='todos'?'corriente':gastoViewType);
   document.getElementById('gDate').value=today();
   updatePaymentUI();
+  const payDetails=document.getElementById('gPaymentDetails');
+  if(payDetails)payDetails.open=false;
   document.getElementById('gSave').textContent='Guardar gasto';
   document.getElementById('gCancelEdit').style.display='none';
 }
@@ -1394,6 +1443,8 @@ async function editGasto(id){
   document.getElementById('gDescription').value=item.description||'';
   document.getElementById('gAmount').value=item.amount||'';
   document.getElementById('gPayment').value=item.paymentMethod||'Efectivo';
+  const payDetails=document.getElementById('gPaymentDetails');
+  if(payDetails)payDetails.open=true;
   updatePaymentUI(item.creditCard||'');
   document.getElementById('gAccount').value=item.account||'';
   document.getElementById('gNote').value=item.note||'';
