@@ -4,6 +4,7 @@ let gastoViewType='todos';
 let gastoFormType='corriente';
 let gastoMainView='capture';
 let gastoSort={key:'date',dir:'desc'};
+let gastoSummaryMonth='';
 let selectedGastoIds=new Set();
 
 const GASTOS_DB='FinoFinanzaGastosDB';
@@ -1304,6 +1305,12 @@ function injectStyles(){
     #gastos .g-main-pane{display:none;gap:14px}
     #gastos .g-main-pane.active{display:grid}
     #gastos .g-history-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    #gastos .g-month-summary-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    #gastos .g-month-picker{display:flex;align-items:center;gap:6px;padding:5px;background:#f8fafc;border:1px solid #e4e7ec;border-radius:12px}
+    #gastos .g-month-picker select{border:0;background:transparent;color:#101828;font-size:12px;font-weight:800;padding:7px 8px;min-width:170px;outline:none}
+    #gastos .g-month-nav{width:34px;height:34px;border:1px solid #d0d5dd;background:#fff;border-radius:9px;color:#475467;font-weight:900;cursor:pointer}
+    #gastos .g-month-nav:disabled{opacity:.35;cursor:not-allowed}
+    #gastos .g-month-caption{font-size:10px;color:#667085;font-weight:700}
 
     #gastos .g-fixed-section{background:#fff;border:1px solid #b2ccff;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
     #gastos .g-fixed-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}
@@ -1661,6 +1668,18 @@ function renderShell(){
       </div>
 
       <div class="g-main-pane" id="gHistoryPane" data-gpane="history">
+        <div class="g-month-summary-bar">
+          <div>
+            <strong style="display:block;font-size:13px;color:#101828">Resumen mensual</strong>
+            <span class="g-month-caption">Selecciona el mes que quieres consultar.</span>
+          </div>
+          <div class="g-month-picker">
+            <button class="g-month-nav" id="gSummaryPrevMonth" type="button" title="Mes anterior">‹</button>
+            <select id="gSummaryMonth" aria-label="Mes del resumen"></select>
+            <button class="g-month-nav" id="gSummaryNextMonth" type="button" title="Mes siguiente">›</button>
+          </div>
+        </div>
+
         <div class="g-summary">
           <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
           <div class="g-stat"><small>Fijos</small><strong id="gFixedTotal">$0.00</strong></div>
@@ -1935,8 +1954,45 @@ function compare(a,b){
   return gastoSort.dir==='asc'?c:-c;
 }
 
+function monthLabel(month=''){
+  if(!/^\d{4}-\d{2}$/.test(month))return month||'—';
+  const [y,m]=month.split('-').map(Number);
+  return new Intl.DateTimeFormat('es-MX',{month:'long',year:'numeric'}).format(new Date(y,m-1,1));
+}
+
+function getAvailableSummaryMonths(all=[]){
+  const current=today().slice(0,7);
+  return unique([current,...all.map(x=>String(x.date||'').slice(0,7)).filter(x=>/^\d{4}-\d{2}$/.test(x))])
+    .sort((a,b)=>b.localeCompare(a));
+}
+
+function renderSummaryMonthSelector(all=[]){
+  const months=getAvailableSummaryMonths(all);
+  const current=today().slice(0,7);
+  const hasCurrent=all.some(x=>String(x.date||'').slice(0,7)===current);
+
+  if(!gastoSummaryMonth || !months.includes(gastoSummaryMonth)){
+    const latestWithData=months.find(m=>all.some(x=>String(x.date||'').slice(0,7)===m));
+    gastoSummaryMonth=hasCurrent?current:(latestWithData||current);
+  }
+
+  const sel=document.getElementById('gSummaryMonth');
+  if(sel){
+    sel.innerHTML=months.map(m=>`<option value="${m}">${esc(monthLabel(m))}</option>`).join('');
+    sel.value=gastoSummaryMonth;
+  }
+
+  const chronological=[...months].sort();
+  const idx=chronological.indexOf(gastoSummaryMonth);
+  const prev=document.getElementById('gSummaryPrevMonth');
+  const next=document.getElementById('gSummaryNextMonth');
+  if(prev)prev.disabled=idx<=0;
+  if(next)next.disabled=idx<0||idx>=chronological.length-1;
+}
+
 async function renderSummary(all){
-  const month=today().slice(0,7);
+  renderSummaryMonthSelector(all);
+  const month=gastoSummaryMonth||today().slice(0,7);
   const monthRows=all.filter(x=>String(x.date||'').slice(0,7)===month);
   const sum=t=>monthRows.filter(x=>!t||x.type===t).reduce((s,x)=>s+Number(x.amount||0),0);
   document.getElementById('gMonthTotal').textContent=money(sum(''));
@@ -2083,6 +2139,23 @@ function bindEvents(){
 
   document.querySelectorAll('#gastos [data-gmain]').forEach(btn=>{
     btn.addEventListener('click',()=>switchGastoMainView(btn.dataset.gmain));
+  });
+
+  document.getElementById('gSummaryMonth')?.addEventListener('change',async e=>{
+    gastoSummaryMonth=e.target.value||today().slice(0,7);
+    await renderSummary(await dbGetAll());
+  });
+  document.getElementById('gSummaryPrevMonth')?.addEventListener('click',async()=>{
+    const all=await dbGetAll();
+    const months=getAvailableSummaryMonths(all).sort();
+    const idx=months.indexOf(gastoSummaryMonth);
+    if(idx>0){gastoSummaryMonth=months[idx-1];await renderSummary(all)}
+  });
+  document.getElementById('gSummaryNextMonth')?.addEventListener('click',async()=>{
+    const all=await dbGetAll();
+    const months=getAvailableSummaryMonths(all).sort();
+    const idx=months.indexOf(gastoSummaryMonth);
+    if(idx>=0&&idx<months.length-1){gastoSummaryMonth=months[idx+1];await renderSummary(all)}
   });
 
   document.getElementById('gSelectAllHistory')?.addEventListener('change',async e=>{
