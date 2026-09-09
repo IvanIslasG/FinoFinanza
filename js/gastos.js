@@ -4,6 +4,7 @@ let gastoViewType='todos';
 let gastoFormType='corriente';
 let gastoMainView='capture';
 let gastoSort={key:'date',dir:'desc'};
+let selectedGastoIds=new Set();
 
 const GASTOS_DB='FinoFinanzaGastosDB';
 const GASTOS_STORE='gastos';
@@ -774,7 +775,27 @@ function renderStatementExtras(){
   }
 }
 
+function showStatementImportToast(message='Compras importadas correctamente'){
+  let toast=document.getElementById('gStatementImportToast');
+  if(!toast){
+    toast=document.createElement('div');
+    toast.id='gStatementImportToast';
+    toast.className='g-import-toast';
+    toast.setAttribute('role','status');
+    toast.setAttribute('aria-live','polite');
+    document.body.appendChild(toast);
+  }
+  toast.innerHTML=`<span class="g-import-check">✓</span><span>${esc(message)}</span>`;
+  toast.classList.remove('show');
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  clearTimeout(showStatementImportToast._timer);
+  showStatementImportToast._timer=setTimeout(()=>toast.classList.remove('show'),2600);
+}
+
 async function importSelectedStatementMovements(){
+  const importBtn=document.getElementById('gStatementImport');
+  const originalBtnText=importBtn?.textContent||'Importar seleccionados';
   const selected=statementMovements.filter(x=>x.importable&&x.selected);
   if(!selected.length){
     alert('No hay compras seleccionadas para importar.');
@@ -789,6 +810,12 @@ async function importSelectedStatementMovements(){
 
   ensureStatementCardCatalog();
   const card=statementCardName();
+
+  if(importBtn){
+    importBtn.disabled=true;
+    importBtn.classList.add('is-loading');
+    importBtn.innerHTML='<span class="g-btn-spinner" aria-hidden="true"></span> Importando…';
+  }
 
   const existing=await dbGetAll();
   let imported=0,skipped=0;
@@ -823,7 +850,22 @@ async function importSelectedStatementMovements(){
   }
 
   await renderAll();
-  setStatementStatus(`Importación terminada: ${imported} nuevas · ${skipped} duplicadas omitidas.`,'ok');
+  const resultMessage=imported>0
+    ? `${imported} compra${imported===1?'':'s'} importada${imported===1?'':'s'} correctamente${skipped?` · ${skipped} duplicada${skipped===1?'':'s'} omitida${skipped===1?'':'s'}`:''}.`
+    : `No se agregaron compras nuevas${skipped?` · ${skipped} ya existía${skipped===1?'':'n'}`:''}.`;
+  setStatementStatus(resultMessage,'ok');
+  showStatementImportToast(imported>0?`✓ ${imported} compra${imported===1?'':'s'} importada${imported===1?'':'s'}`:'Sin compras nuevas');
+
+  if(importBtn){
+    importBtn.classList.remove('is-loading');
+    importBtn.classList.add('is-success');
+    importBtn.innerHTML=imported>0?'✓ Importadas':'✓ Revisado';
+    setTimeout(()=>{
+      importBtn.disabled=false;
+      importBtn.classList.remove('is-success');
+      importBtn.textContent=originalBtnText;
+    },1800);
+  }
 }
 
 function clearStatementReader(){
@@ -1337,6 +1379,12 @@ function injectStyles(){
     #gastos .g-danger{color:#b42318}
     #gastos .g-empty{padding:28px;text-align:center;color:#667085}
     #gastos .g-count-row{display:flex;justify-content:space-between;gap:12px;margin:7px 0;color:#667085;font-size:10px}
+    #gastos .g-bulk-bar{display:none;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:8px 0 10px;padding:9px 11px;border:1px solid #fecdca;background:#fff6f5;border-radius:10px}
+    #gastos .g-bulk-bar.show{display:flex}
+    #gastos .g-bulk-copy{display:flex;align-items:center;gap:8px;color:#912018;font-size:10px;font-weight:800}
+    #gastos .g-bulk-actions{display:flex;gap:7px;align-items:center}
+    #gastos .g-row-check,#gastos #gSelectAllHistory{width:15px;height:15px;cursor:pointer;accent-color:#155eef}
+    #gastos tr.g-selected-row{background:#f8fbff}
     #gastos .g-statement-controls{
       display:grid;
       grid-template-columns:repeat(3,minmax(0,1fr));
@@ -1408,6 +1456,15 @@ function injectStyles(){
     #gastos .g-mini-stats small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:800;margin-bottom:4px}
     #gastos .g-mini-stats strong{font-size:14px;color:#101828}
     #gastos .g-fin-table{min-width:760px}
+
+    #gastos .g-btn.is-loading{opacity:.82;cursor:wait}
+    #gastos .g-btn.is-success{background:#079455;border-color:#079455;color:#fff;transform:scale(1.02);transition:transform .18s ease,background .18s ease}
+    #gastos .g-btn-spinner{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;margin-right:4px;animation:gSpin .7s linear infinite}
+    @keyframes gSpin{to{transform:rotate(360deg)}}
+    .g-import-toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,18px) scale(.96);display:flex;align-items:center;gap:9px;background:#101828;color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:11px 15px;box-shadow:0 14px 36px rgba(16,24,40,.24);font-size:12px;font-weight:800;opacity:0;pointer-events:none;z-index:10000;transition:opacity .2s ease,transform .25s ease}
+    .g-import-toast.show{opacity:1;transform:translate(-50%,0) scale(1)}
+    .g-import-check{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#17b26a;color:#fff;font-size:13px;font-weight:900}
+
     @media(max-width:820px){#gastos .g-mini-stats{grid-template-columns:1fr 1fr}}
     @media(max-width:820px){#gastos .g-statement-controls{grid-template-columns:1fr}}
 
@@ -1647,10 +1704,19 @@ function renderShell(){
             <span>Deudas se administrarán en su módulo independiente.</span>
           </div>
 
+          <div class="g-bulk-bar" id="gBulkBar">
+            <div class="g-bulk-copy"><span>✓</span><span id="gBulkCount">0 gastos seleccionados</span></div>
+            <div class="g-bulk-actions">
+              <button class="g-btn" id="gBulkClear" type="button">Quitar selección</button>
+              <button class="g-btn g-danger" id="gBulkDelete" type="button">Eliminar seleccionados</button>
+            </div>
+          </div>
+
           <div class="g-table-wrap">
             <table>
               <thead>
                 <tr>
+                  <th style="width:34px;text-align:center"><input id="gSelectAllHistory" type="checkbox" aria-label="Seleccionar todos los gastos visibles"></th>
                   <th class="sortable active" data-gsort="date">Fecha ↕</th>
                   <th class="sortable" data-gsort="person">Persona ↕</th>
                   <th class="sortable" data-gsort="type">Tipo ↕</th>
@@ -1879,6 +1945,48 @@ async function renderSummary(all){
   document.getElementById('gMaintenanceTotal').textContent=money(sum('manutencion'));
 }
 
+function updateBulkHistoryUI(visibleRows=[]){
+  const visibleIds=new Set((visibleRows||[]).map(x=>Number(x.id)));
+  const selectedVisible=[...selectedGastoIds].filter(id=>visibleIds.has(Number(id)));
+  const count=selectedGastoIds.size;
+  const bar=document.getElementById('gBulkBar');
+  const label=document.getElementById('gBulkCount');
+  if(bar)bar.classList.toggle('show',count>0);
+  if(label)label.textContent=`${count} gasto${count===1?'':'s'} seleccionado${count===1?'':'s'}`;
+
+  const allCheck=document.getElementById('gSelectAllHistory');
+  if(allCheck){
+    allCheck.checked=visibleRows.length>0 && selectedVisible.length===visibleRows.length;
+    allCheck.indeterminate=selectedVisible.length>0 && selectedVisible.length<visibleRows.length;
+  }
+}
+
+function clearBulkHistorySelection(){
+  selectedGastoIds.clear();
+  document.querySelectorAll('#gHistoryBody [data-select-g]').forEach(el=>el.checked=false);
+  document.querySelectorAll('#gHistoryBody tr.g-selected-row').forEach(tr=>tr.classList.remove('g-selected-row'));
+  updateBulkHistoryUI([]);
+}
+
+async function deleteSelectedGastos(){
+  const ids=[...selectedGastoIds].map(Number).filter(Number.isFinite);
+  if(!ids.length)return;
+  const label=ids.length===1?'este gasto':`estos ${ids.length} gastos`;
+  if(!confirm(`¿Eliminar ${label}? Esta acción no se puede deshacer.`))return;
+
+  const btn=document.getElementById('gBulkDelete');
+  const old=btn?.textContent||'Eliminar seleccionados';
+  if(btn){btn.disabled=true;btn.textContent='Eliminando…'}
+  try{
+    for(const id of ids)await dbDelete(id);
+    selectedGastoIds.clear();
+    await renderAll();
+    showGastoToast?.(`✓ ${ids.length} gasto${ids.length===1?'':'s'} eliminado${ids.length===1?'':'s'}`);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=old}
+  }
+}
+
 async function renderHistory(){
   const all=await dbGetAll();
   const f=filters();
@@ -1897,17 +2005,22 @@ async function renderHistory(){
   });
   rows.sort(compare);
 
+  const existingIds=new Set(all.map(x=>Number(x.id)));
+  selectedGastoIds=new Set([...selectedGastoIds].filter(id=>existingIds.has(Number(id))));
+
   const total=rows.reduce((s,x)=>s+Number(x.amount||0),0);
   document.getElementById('gCount').textContent=`${rows.length} registro${rows.length===1?'':'s'}`;
   document.getElementById('gVisibleTotal').textContent=money(total);
 
   const body=document.getElementById('gHistoryBody');
   if(!rows.length){
-    body.innerHTML=`<tr><td colspan="8"><div class="g-empty">No hay gastos que coincidan con los filtros.</div></td></tr>`;
+    body.innerHTML=`<tr><td colspan="9"><div class="g-empty">No hay gastos que coincidan con los filtros.</div></td></tr>`;
+    updateBulkHistoryUI(rows);
     return;
   }
   body.innerHTML=rows.map(x=>`
-    <tr>
+    <tr class="${selectedGastoIds.has(Number(x.id))?'g-selected-row':''}">
+      <td style="text-align:center"><input class="g-row-check" type="checkbox" data-select-g="${x.id}" ${selectedGastoIds.has(Number(x.id))?'checked':''} aria-label="Seleccionar gasto"></td>
       <td>${fmtDate(x.date)}</td>
       <td>${esc(personLabel(x.person))}</td>
       <td><span class="g-type ${esc(x.type)}">${esc(typeLabel(x.type))}</span></td>
@@ -1922,8 +2035,15 @@ async function renderHistory(){
     </tr>
   `).join('');
 
+  body.querySelectorAll('[data-select-g]').forEach(cb=>cb.addEventListener('change',()=>{
+    const id=Number(cb.dataset.selectG);
+    if(cb.checked)selectedGastoIds.add(id); else selectedGastoIds.delete(id);
+    cb.closest('tr')?.classList.toggle('g-selected-row',cb.checked);
+    updateBulkHistoryUI(rows);
+  }));
   body.querySelectorAll('[data-edit-g]').forEach(b=>b.addEventListener('click',()=>editGasto(Number(b.dataset.editG))));
   body.querySelectorAll('[data-del-g]').forEach(b=>b.addEventListener('click',()=>deleteGasto(Number(b.dataset.delG))));
+  updateBulkHistoryUI(rows);
 }
 
 async function renderAll(){
@@ -1964,6 +2084,34 @@ function bindEvents(){
   document.querySelectorAll('#gastos [data-gmain]').forEach(btn=>{
     btn.addEventListener('click',()=>switchGastoMainView(btn.dataset.gmain));
   });
+
+  document.getElementById('gSelectAllHistory')?.addEventListener('change',async e=>{
+    const all=await dbGetAll();
+    const f=filters();
+    const visible=all.filter(x=>{
+      if(gastoViewType!=='todos' && x.type!==gastoViewType)return false;
+      if(f.person&&x.person!==f.person)return false;
+      if(f.type&&x.type!==f.type)return false;
+      if(f.category&&x.category!==f.category)return false;
+      if(f.from&&String(x.date||'')<f.from)return false;
+      if(f.to&&String(x.date||'')>f.to)return false;
+      if(f.q){
+        const hay=norm([personLabel(x.person),x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
+        if(!hay.includes(f.q))return false;
+      }
+      return true;
+    });
+    for(const x of visible){
+      if(e.target.checked)selectedGastoIds.add(Number(x.id));
+      else selectedGastoIds.delete(Number(x.id));
+    }
+    await renderHistory();
+  });
+  document.getElementById('gBulkClear')?.addEventListener('click',async()=>{
+    selectedGastoIds.clear();
+    await renderHistory();
+  });
+  document.getElementById('gBulkDelete')?.addEventListener('click',deleteSelectedGastos);
 
   document.getElementById('gType').addEventListener('change',e=>setFormType(e.target.value));
   document.getElementById('gPayment').addEventListener('change',()=>updatePaymentUI());
