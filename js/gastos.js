@@ -153,16 +153,63 @@ async function extractPdfText(pdf,pageNums=[]){
   return out;
 }
 
-async function detectStatementProfile(pdf){
-  const pages=await extractPdfText(pdf,[1,2,3].filter(n=>n<=pdf.numPages));
-  const text=norm(pages.map(p=>p.text).join(' '));
-  if((text.includes('costco')&&text.includes('banamex'))||text.includes('tarjeta de credito costco banamex')){
-    return {profile:'costco-banamex',pages};
+function scoreStatementProfile(rawText='',fileName=''){
+  const text=norm(`${fileName} ${rawText}`);
+  let hsbc=0,costco=0;
+
+  // Costco Banamex suele ser muy explícito en el PDF.
+  if(text.includes('costco'))costco+=5;
+  if(text.includes('banamex'))costco+=4;
+  if(text.includes('tarjeta de credito costco banamex'))costco+=8;
+  if(text.includes('reembolso anual'))costco+=3;
+
+  // HSBC 2Now cambia ligeramente de formato entre estados y no siempre
+  // conserva la cadena exacta "HSBC 2Now" en la capa de texto.
+  if(text.includes('hsbc'))hsbc+=5;
+  if(text.includes('2now')||text.includes('2 now'))hsbc+=7;
+  if(text.includes('saldo 2now')||text.includes('saldo hsbc 2now'))hsbc+=6;
+  if(text.includes('cashback')||text.includes('saldo cashback'))hsbc+=2;
+  if(text.includes('tarjeta de credito hsbc'))hsbc+=3;
+  if(text.includes('cargos abonos y compras regulares')||text.includes('cargos, abonos y compras regulares'))hsbc+=2;
+
+  if(costco>=7 && costco>hsbc)return {profile:'costco-banamex',score:costco};
+  if(hsbc>=5 && hsbc>=costco)return {profile:'hsbc-2now',score:hsbc};
+  return {profile:'',score:Math.max(hsbc,costco)};
+}
+
+async function ocrStatementIdentityPages(pdf,pageNums=[1,2]){
+  if(!window.Tesseract)return '';
+  const worker=await window.Tesseract.createWorker('spa');
+  const chunks=[];
+  try{
+    for(const pageNum of pageNums){
+      if(pageNum<1||pageNum>pdf.numPages)continue;
+      setStatementStatus(`Identificando estado de cuenta · revisando página ${pageNum}…`);
+      const canvas=await renderPdfPageToCanvas(pdf,pageNum,1.8);
+      const result=await worker.recognize(canvas);
+      chunks.push(result?.data?.text||'');
+    }
+  }finally{
+    await worker.terminate();
   }
-  if(text.includes('hsbc')&&(text.includes('2now')||text.includes('2 now'))){
-    return {profile:'hsbc-2now',pages};
-  }
-  return {profile:'',pages};
+  return chunks.join('\n');
+}
+
+async function detectStatementProfile(pdf,fileName=''){
+  // Primero usamos la capa de texto: es rápida y suficiente para la mayoría.
+  const pageNums=[1,2,3,4].filter(n=>n<=pdf.numPages);
+  const pages=await extractPdfText(pdf,pageNums);
+  const nativeText=pages.map(p=>p.text).join('\n');
+  let result=scoreStatementProfile(nativeText,fileName);
+  if(result.profile)return {profile:result.profile,pages,detectionSource:'text'};
+
+  // Algunos estados HSBC 2Now traen una capa de texto pobre o fragmentada.
+  // En ese caso hacemos OCR únicamente de las primeras páginas para identificarlo.
+  const ocrText=await ocrStatementIdentityPages(pdf,[1,2].filter(n=>n<=pdf.numPages));
+  result=scoreStatementProfile(`${nativeText}\n${ocrText}`,fileName);
+  if(result.profile)return {profile:result.profile,pages,detectionSource:'ocr',identityOcr:ocrText};
+
+  return {profile:'',pages,detectionSource:'none',identityOcr:ocrText};
 }
 
 function profileCardName(profile=''){
@@ -566,7 +613,7 @@ async function processStatement(){
     let profile=statementProfile;
     if(profile==='auto'){
       setStatementStatus('Identificando banco y producto…');
-      const detected=await detectStatementProfile(statementPdfDoc);
+      const detected=await detectStatementProfile(statementPdfDoc,statementPdfFile?.name||'');
       profile=detected.profile;
       prefetched=detected.pages||[];
       if(!profile)throw new Error('No pude identificar automáticamente el tipo de estado de cuenta. Prueba seleccionando el perfil manualmente.');
