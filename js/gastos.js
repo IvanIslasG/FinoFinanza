@@ -15,6 +15,8 @@ const CREDIT_CARDS_KEY='finoFinanza.creditCards';
 const QUICK_TEMPLATES_KEY='finoFinanza.quickExpenseTemplates';
 const LEGACY_FIXED_TEMPLATES_KEY='finoFinanza.fixedExpenseTemplates';
 const STATEMENT_RULES_KEY='finoFinanza.statementMerchantRules';
+const STATEMENT_FINANCING_KEY='finoFinanza.statementFinancingPlans';
+const CARD_REWARDS_KEY='finoFinanza.cardRewards';
 
 const BASE_CATEGORIES={
   fijo:[
@@ -40,7 +42,11 @@ const PAYMENT_METHODS=[
 let statementPdfFile=null;
 let statementPdfDoc=null;
 let statementMovements=[];
-let statementProfile='hsbc-2now';
+let statementFinancing=[];
+let statementRewards=null;
+let statementMeta={};
+let statementProfile='auto';
+let statementDetectedProfile='';
 const PDFJS_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
 const PDFJS_WORKER='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 const TESSERACT_CDN='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
@@ -90,6 +96,95 @@ function parseHsbcDate(raw='',year=2026){
   const mon=months[norm(m[2]).slice(0,3)];
   if(!mon)return '';
   return `${m[3]}-${mon}-${String(m[1]).padStart(2,'0')}`;
+}
+
+function parseCardDate(raw=''){
+  return parseHsbcDate(raw);
+}
+
+function getStoredFinancingPlans(){
+  try{
+    const v=JSON.parse(localStorage.getItem(STATEMENT_FINANCING_KEY)||'[]');
+    return Array.isArray(v)?v:[];
+  }catch{return []}
+}
+function saveStoredFinancingPlans(v){
+  localStorage.setItem(STATEMENT_FINANCING_KEY,JSON.stringify((v||[]).slice(-500)));
+}
+function getStoredCardRewards(){
+  try{
+    const v=JSON.parse(localStorage.getItem(CARD_REWARDS_KEY)||'{}');
+    return v&&typeof v==='object'?v:{};
+  }catch{return {}}
+}
+function saveStoredCardReward(cardName,reward){
+  if(!cardName||!reward)return;
+  const all=getStoredCardRewards();
+  all[cardName]={...reward,updatedAt:new Date().toISOString()};
+  localStorage.setItem(CARD_REWARDS_KEY,JSON.stringify(all));
+}
+
+async function extractPdfPageLines(pdf,pageNum){
+  const page=await pdf.getPage(pageNum);
+  const content=await page.getTextContent();
+  const items=(content.items||[]).filter(x=>String(x.str||'').trim()).map(x=>({
+    text:String(x.str||'').trim(),
+    x:Number(x.transform?.[4]||0),
+    y:Number(x.transform?.[5]||0)
+  }));
+  const rows=[];
+  const tolerance=2.2;
+  for(const item of items.sort((a,b)=>b.y-a.y||a.x-b.x)){
+    let row=rows.find(r=>Math.abs(r.y-item.y)<=tolerance);
+    if(!row){row={y:item.y,items:[]};rows.push(row)}
+    row.items.push(item);
+  }
+  rows.sort((a,b)=>b.y-a.y);
+  return rows.map(r=>r.items.sort((a,b)=>a.x-b.x).map(i=>i.text).join(' ').replace(/\s+/g,' ').trim()).filter(Boolean);
+}
+
+async function extractPdfText(pdf,pageNums=[]){
+  const out=[];
+  for(const pageNum of pageNums){
+    if(pageNum<1||pageNum>pdf.numPages)continue;
+    const lines=await extractPdfPageLines(pdf,pageNum);
+    out.push({pageNum,lines,text:lines.join('\n')});
+  }
+  return out;
+}
+
+async function detectStatementProfile(pdf){
+  const pages=await extractPdfText(pdf,[1,2,3].filter(n=>n<=pdf.numPages));
+  const text=norm(pages.map(p=>p.text).join(' '));
+  if((text.includes('costco')&&text.includes('banamex'))||text.includes('tarjeta de credito costco banamex')){
+    return {profile:'costco-banamex',pages};
+  }
+  if(text.includes('hsbc')&&(text.includes('2now')||text.includes('2 now'))){
+    return {profile:'hsbc-2now',pages};
+  }
+  return {profile:'',pages};
+}
+
+function profileCardName(profile=''){
+  if(profile==='costco-banamex')return 'Costco Banamex';
+  if(profile==='hsbc-2now')return 'HSBC 2Now';
+  return 'Tarjeta de crédito';
+}
+
+function financingPlanKey(x={}){
+  return [norm(x.card||''),norm(x.description||''),x.operationDate||'',Number(x.originalAmount||0).toFixed(2),x.installments||''].join('|');
+}
+
+function persistStatementFinancing(){
+  if(!statementFinancing.length)return;
+  const current=getStoredFinancingPlans();
+  for(const plan of statementFinancing){
+    const item={...plan,card:statementCardName(),person:document.getElementById('gStatementPerson')?.value||'',updatedAt:new Date().toISOString()};
+    const key=financingPlanKey(item);
+    const idx=current.findIndex(x=>financingPlanKey(x)===key);
+    if(idx>=0)current[idx]={...current[idx],...item}; else current.push(item);
+  }
+  saveStoredFinancingPlans(current);
 }
 
 const BUILTIN_STATEMENT_RULES=[
@@ -240,6 +335,135 @@ function extractHsbcMovementsFromOCR(text=''){
   });
 }
 
+
+function classifyBanamexMovement(description='',signedAmount=0){
+  const d=norm(description);
+  if(signedAmount<0||d.includes('pago interbancario')||d.includes('pago recibido')){
+    return {kind:'payment',importable:false,type:'',category:'',concept:'Pago de tarjeta',reason:'Pago/abono: no es gasto nuevo'};
+  }
+  if(d.includes('interes')||d.includes('iva por intereses')||d.includes('diferimiento de saldo')){
+    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',concept:genericStatementConcept(description),reason:'Financiamiento/intereses: se controla aparte'};
+  }
+  const installment=/\b0*([1-9]\d*)\s+de\s+0*([1-9]\d*)\b/i.exec(description);
+  const rule=findStatementRule(description);
+  let concept=rule?.concept||genericStatementConcept(description.replace(/\b0*\d+\s+de\s+0*\d+\b/ig,' '));
+  let type=rule?.type||'corriente',category=rule?.category||'Otro';
+  if(!rule){
+    if(d.includes('farm'))category='Salud / Farmacia';
+    else if(d.includes('gasol'))category='Gasolina';
+    else if(d.includes('walmart')||d.includes('bodega')||d.includes('sams'))category='Supermercado';
+    else if(d.includes('rest ')||d.includes('antojitos')||d.includes('paleteria')||d.includes('heladeria')||d.includes('zarza'))category='Comida fuera';
+    else if(d.includes('ticket'))category='Entretenimiento';
+  }
+  return {
+    kind:installment?'installment':'purchase',importable:true,concept,type,category,
+    reason:installment?`Mensualidad ${Number(installment[1])} de ${Number(installment[2])}`:(rule?.source==='learned'?'Clasificación aprendida':'Compra regular'),
+    installmentNumber:installment?Number(installment[1]):null,
+    installments:installment?Number(installment[2]):null
+  };
+}
+
+function extractBanamexRegularMovements(lines=[]){
+  const rows=[];
+  const dateRx='(\\d{1,2}[-/][A-Za-zÁÉÍÓÚáéíóú]{3}[-/]\\d{4})';
+  const rx=new RegExp('^'+dateRx+'\\s+'+dateRx+'\\s+(.+?)\\s+([+-])?\\s*\\$?\\s*([\\d,]+\\.\\d{2})$','i');
+  for(let i=0;i<lines.length;i++){
+    let line=String(lines[i]||'').replace(/\s+/g,' ').trim();
+    let m=line.match(rx);
+    if(!m)continue;
+    const description=m[3].trim();
+    const amount=parseMoneyMX(m[5]);
+    const signedAmount=m[4]==='-'?-Math.abs(amount):Math.abs(amount);
+    const cls=classifyBanamexMovement(description,signedAmount);
+    rows.push({
+      operationDate:parseCardDate(m[1]),chargeDate:parseCardDate(m[2]),originalDescription:description,
+      description:cls.concept||genericStatementConcept(description),amount:Math.abs(amount),signedAmount,
+      ...cls,selected:cls.importable,source:'Costco Banamex'
+    });
+  }
+  const seen=new Set();
+  return rows.filter(r=>{
+    const key=[r.operationDate,r.chargeDate,norm(r.originalDescription),r.signedAmount].join('|');
+    if(seen.has(key))return false;seen.add(key);return true;
+  });
+}
+
+function parseBanamexFinancing(lines=[]){
+  const plans=[];
+  for(const raw of lines){
+    const line=String(raw||'').replace(/\s+/g,' ').trim();
+    // MSI: fecha + descripción + monto original + saldo pendiente + pago requerido + N de M + NA
+    let m=line.match(/^(\d{1,2}[-/][A-Za-zÁÉÍÓÚáéíóú]{3}[-/]\d{4})\s+(.+?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+(\d+)\s+de\s+(\d+)\s+(?:NA|N\/?A)$/i);
+    if(m){
+      plans.push({
+        operationDate:parseCardDate(m[1]),description:genericStatementConcept(m[2]),originalDescription:m[2].trim(),
+        financingType:'MSI',originalAmount:parseMoneyMX(m[3]),pendingBalance:parseMoneyMX(m[4]),monthlyPayment:parseMoneyMX(m[5]),
+        installmentNumber:Number(m[6]),installments:Number(m[7]),interestRate:0,periodInterest:0,interestTax:0,active:Number(m[6])<Number(m[7])
+      });
+      continue;
+    }
+    // Meses con intereses: fecha + descripción + original + pendiente + interés + IVA + pago + N de M + tasa%
+    m=line.match(/^(\d{1,2}[-/][A-Za-zÁÉÍÓÚáéíóú]{3}[-/]\d{4})\s+(.+?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+(\d+)\s+de\s+(\d+)\s+([\d.]+)%$/i);
+    if(m){
+      plans.push({
+        operationDate:parseCardDate(m[1]),description:genericStatementConcept(m[2]),originalDescription:m[2].trim(),
+        financingType:'CON_INTERESES',originalAmount:parseMoneyMX(m[3]),pendingBalance:parseMoneyMX(m[4]),periodInterest:parseMoneyMX(m[5]),interestTax:parseMoneyMX(m[6]),monthlyPayment:parseMoneyMX(m[7]),
+        installmentNumber:Number(m[8]),installments:Number(m[9]),interestRate:Number(m[10])||0,active:Number(m[8])<Number(m[9])
+      });
+    }
+  }
+  return plans;
+}
+
+function extractNumberNear(text='',label=''){
+  const idx=norm(text).indexOf(norm(label));
+  if(idx<0)return null;
+  const seg=String(text).slice(idx,idx+260);
+  const m=seg.match(/\$?\s*([\d,]+\.\d{2})/);
+  return m?parseMoneyMX(m[1]):null;
+}
+
+function parseBanamexRewards(text=''){
+  const clean=String(text).replace(/\s+/g,' ');
+  const ready=extractNumberNear(clean,'Listo para usar');
+  const previous=extractNumberNear(clean,'Acumulado al corte anterior');
+  const total=extractNumberNear(clean,'Acumulado total');
+  let generated=null;
+  // En el recuadro Banamex aparecen porcentajes; sumamos importes de 5%, 4%, 3%, 2%, 1% si están presentes.
+  const pct=[...clean.matchAll(/(?:5%|4%|3%|2%|1%)\s*\$?\s*([\d,]+\.\d{2})/g)].map(m=>parseMoneyMX(m[1]));
+  if(pct.length)generated=pct.reduce((a,b)=>a+b,0);
+  if(ready==null&&previous==null&&total==null&&generated==null)return null;
+  return {program:'Reembolso Anual Costco Banamex',availableBalance:ready,previousAccumulated:previous,earnedThisPeriod:generated,totalAccumulated:total};
+}
+
+function parseHsbc2NowRewards(text='',movements=[]){
+  const clean=String(text).replace(/\s+/g,' ');
+  const has2now=/2\s*now/i.test(clean)||/saldo\s+2\s*now/i.test(clean);
+  let current=null,earned=null;
+  const currentMatch=clean.match(/saldo\s+(?:hsbc\s*)?2\s*now[^$\d]{0,80}\$?\s*([\d,]+\.\d{2})/i);
+  if(currentMatch)current=parseMoneyMX(currentMatch[1]);
+  const earnedMatch=clean.match(/(?:cashback|saldo\s+2\s*now)[^$\d]{0,120}(?:generado|bonificad[oa]|acumulad[oa])[^$\d]{0,60}\$?\s*([\d,]+\.\d{2})/i);
+  if(earnedMatch)earned=parseMoneyMX(earnedMatch[1]);
+  const eligible=movements.filter(x=>x.importable&&x.kind==='purchase').reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const estimated=Math.min(eligible,42500)*0.02;
+  if(!has2now&&current==null&&!movements.length)return null;
+  return {program:'Saldo 2Now',cashbackRate:0.02,currentBalance:current,earnedThisPeriod:earned,eligiblePurchases:eligible,estimatedNextCredit:estimated,eligibleCap:42500,estimatedMaxCashback:850};
+}
+
+async function extractCostcoBanamexStatement(pdf,prefetchedPages=[]){
+  const pageNums=[1,2,3].filter(n=>n<=pdf.numPages);
+  const pages=prefetchedPages?.length?prefetchedPages:await extractPdfText(pdf,pageNums);
+  const lines=pages.flatMap(p=>p.lines||[]);
+  const text=pages.map(p=>p.text).join('\n');
+  const movements=extractBanamexRegularMovements(lines);
+  const financing=parseBanamexFinancing(lines);
+  const rewards=parseBanamexRewards(text);
+  const period=(text.match(/Periodo:?\s*(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})\s+al\s+(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})/i)||[]);
+  const cut=(text.match(/Fecha de corte:?\s*(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})/i)||[])[1];
+  const due=(text.match(/Fecha l[ií]mite de pago:?[^\d]*(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})/i)||[])[1];
+  return {movements,financing,rewards,text,meta:{periodStart:parseCardDate(period[1]||''),periodEnd:parseCardDate(period[2]||''),cutDate:parseCardDate(cut||''),dueDate:parseCardDate(due||'')}};
+}
+
 async function renderPdfPageToCanvas(pdf,pageNum,scale=2){
   const page=await pdf.getPage(pageNum);
   const viewport=page.getViewport({scale});
@@ -312,7 +536,7 @@ function setStatementStatus(text='',kind=''){
 }
 
 function statementCardName(){
-  return document.getElementById('gStatementCardName')?.value?.trim()||'HSBC 2Now';
+  return document.getElementById('gStatementCardName')?.value?.trim()||profileCardName(statementDetectedProfile||statementProfile);
 }
 
 function ensureStatementCardCatalog(){
@@ -336,32 +560,57 @@ async function processStatement(){
 
     const data=await statementPdfFile.arrayBuffer();
     statementPdfDoc=await window.pdfjsLib.getDocument({data}).promise;
+    statementMovements=[];statementFinancing=[];statementRewards=null;statementMeta={};
 
-    if(statementProfile!=='hsbc-2now'){
-      throw new Error('Por ahora solo está disponible el perfil HSBC 2Now.');
+    let prefetched=[];
+    let profile=statementProfile;
+    if(profile==='auto'){
+      setStatementStatus('Identificando banco y producto…');
+      const detected=await detectStatementProfile(statementPdfDoc);
+      profile=detected.profile;
+      prefetched=detected.pages||[];
+      if(!profile)throw new Error('No pude identificar automáticamente el tipo de estado de cuenta. Prueba seleccionando el perfil manualmente.');
     }
+    statementDetectedProfile=profile;
+    const cardInput=document.getElementById('gStatementCardName');
+    if(cardInput)cardInput.value=profileCardName(profile);
 
-    const {pageNum,text}=await ocrHsbcMovementPage(statementPdfDoc);
-    if(!pageNum||!text){
-      setStatementStatus('No encontré la tabla de movimientos de HSBC 2Now.','warn');
-      return;
-    }
-
-    const rows=extractHsbcMovementsFromOCR(text);
-    statementMovements=rows;
-
-    if(!rows.length){
-      setStatementStatus(`Detecté una página candidata (${pageNum}), pero no pude estructurar todavía sus movimientos. Usa “Ver OCR” para revisar el texto.`,'warn');
+    if(profile==='hsbc-2now'){
+      const {pageNum,text}=await ocrHsbcMovementPage(statementPdfDoc);
+      if(!pageNum||!text){
+        setStatementStatus('Identifiqué HSBC 2Now, pero no encontré su tabla de movimientos.','warn');
+        return;
+      }
+      statementMovements=extractHsbcMovementsFromOCR(text);
+      statementRewards=parseHsbc2NowRewards(text,statementMovements);
+      statementMeta={movementPage:pageNum};
       const dbg=document.getElementById('gStatementOcr');
-      if(dbg){dbg.value=text;dbg.closest('.g-statement-debug').style.display='block'}
-      return;
+      if(dbg)dbg.value=text;
+    }else if(profile==='costco-banamex'){
+      setStatementStatus('Leyendo Costco Banamex…');
+      const parsed=await extractCostcoBanamexStatement(statementPdfDoc,prefetched);
+      statementMovements=parsed.movements;
+      statementFinancing=parsed.financing;
+      statementRewards=parsed.rewards;
+      statementMeta=parsed.meta||{};
+      const dbg=document.getElementById('gStatementOcr');
+      if(dbg)dbg.value=parsed.text||'';
+    }else{
+      throw new Error('Perfil bancario todavía no compatible.');
     }
 
-    const dbg=document.getElementById('gStatementOcr');
-    if(dbg)dbg.value=text;
+    if(!statementMovements.length && !statementFinancing.length && !statementRewards){
+      setStatementStatus('Identifiqué el estado de cuenta, pero no pude estructurar sus datos. Usa “Ver texto” para revisar la extracción.','warn');
+      return;
+    }
 
     renderStatementPreview();
-    setStatementStatus(`${rows.length} movimientos detectados en la página ${pageNum}. Revisa antes de importar.`,'ok');
+    renderStatementExtras();
+    persistStatementFinancing();
+    if(statementRewards)saveStoredCardReward(statementCardName(),statementRewards);
+
+    const profileLabel=profileCardName(profile);
+    setStatementStatus(`${profileLabel} detectada · ${statementMovements.length} movimientos · ${statementFinancing.length} compras/planes a meses.`,'ok');
   }catch(err){
     console.error(err);
     setStatementStatus('No fue posible leer el estado de cuenta: '+(err?.message||err),'warn');
@@ -433,7 +682,49 @@ function renderStatementPreview(){
   const purchases=statementMovements.filter(x=>x.importable).length;
   const excluded=statementMovements.length-purchases;
   document.getElementById('gStatementSummary').textContent=
-    `${purchases} compras importables · ${excluded} movimientos excluidos/revisión`;
+    `${purchases} compras importables · ${statementMovements.filter(x=>x.kind==='installment').length} mensualidades · ${excluded} movimientos excluidos/revisión`;
+}
+
+
+function renderStatementExtras(){
+  const rewards=document.getElementById('gStatementRewards');
+  const financing=document.getElementById('gStatementFinancing');
+  if(rewards){
+    if(!statementRewards){rewards.style.display='none';rewards.innerHTML=''}
+    else{
+      rewards.style.display='';
+      const r=statementRewards;
+      if(statementDetectedProfile==='hsbc-2now'){
+        rewards.innerHTML=`<div class="g-extra-title"><strong>Saldo 2Now</strong><small>Cashback y proyección</small></div><div class="g-mini-stats">
+          <div><small>Saldo actual</small><strong>${r.currentBalance==null?'—':money(r.currentBalance)}</strong></div>
+          <div><small>Compras elegibles detectadas</small><strong>${money(r.eligiblePurchases||0)}</strong></div>
+          <div><small>Cashback estimado próximo abono</small><strong>${money(r.estimatedNextCredit||0)}</strong></div>
+          <div><small>Límite estimado por corte</small><strong>${money(r.estimatedMaxCashback||850)}</strong></div>
+        </div>`;
+      }else{
+        rewards.innerHTML=`<div class="g-extra-title"><strong>Reembolso Costco Banamex</strong><small>Programa de beneficios</small></div><div class="g-mini-stats">
+          <div><small>Disponible para usar</small><strong>${r.availableBalance==null?'—':money(r.availableBalance)}</strong></div>
+          <div><small>Generado este corte</small><strong>${r.earnedThisPeriod==null?'—':money(r.earnedThisPeriod)}</strong></div>
+          <div><small>Acumulado anterior</small><strong>${r.previousAccumulated==null?'—':money(r.previousAccumulated)}</strong></div>
+          <div><small>Acumulado total</small><strong>${r.totalAccumulated==null?'—':money(r.totalAccumulated)}</strong></div>
+        </div>`;
+      }
+    }
+  }
+  if(financing){
+    if(!statementFinancing.length){financing.style.display='none';financing.innerHTML=''}
+    else{
+      financing.style.display='';
+      const nextCommitment=statementFinancing.filter(x=>x.active!==false).reduce((s,x)=>s+Number(x.monthlyPayment||0),0);
+      financing.innerHTML=`<div class="g-extra-title"><strong>Compras y planes a meses</strong><small>Compromiso mensual detectado: ${money(nextCommitment)}</small></div>
+      <div class="g-table-wrap"><table class="g-fin-table"><thead><tr><th>Compra / plan</th><th>Tipo</th><th>Original</th><th>Mensualidad</th><th>Avance</th><th>Pendiente</th><th>Tasa</th></tr></thead><tbody>${statementFinancing.map(x=>`<tr>
+        <td><strong>${esc(x.description)}</strong><br><small>${fmtDate(x.operationDate)}</small></td>
+        <td>${x.financingType==='MSI'?'MSI':'Con intereses'}</td>
+        <td class="g-money">${money(x.originalAmount)}</td><td class="g-money">${money(x.monthlyPayment)}</td>
+        <td>${x.installmentNumber||'—'} / ${x.installments||'—'}</td><td class="g-money">${money(x.pendingBalance)}</td><td>${Number(x.interestRate||0).toFixed(2)}%</td>
+      </tr>`).join('')}</tbody></table></div>`;
+    }
+  }
 }
 
 async function importSelectedStatementMovements(){
@@ -475,8 +766,9 @@ async function importSelectedStatementMovements(){
       paymentMethod:'Tarjeta de crédito',
       creditCard:card,
       account:'',
-      note:`Importado desde estado de cuenta HSBC 2Now · cargo ${fmtDate(r.chargeDate)}`,
-      source:'statement-hsbc-2now',
+      note:`Importado desde estado de cuenta ${profileCardName(statementDetectedProfile||statementProfile)} · cargo ${fmtDate(r.chargeDate)}`,
+      source:`statement-${statementDetectedProfile||statementProfile}`,
+      financing:r.kind==='installment'?{type:'MSI',installmentNumber:r.installmentNumber||null,installments:r.installments||null}:null,
       createdAt:new Date().toISOString(),
       updatedAt:new Date().toISOString()
     });
@@ -491,15 +783,21 @@ function clearStatementReader(){
   statementPdfFile=null;
   statementPdfDoc=null;
   statementMovements=[];
+  statementFinancing=[];
+  statementRewards=null;
+  statementMeta={};
+  statementDetectedProfile='';
   const input=document.getElementById('gStatementFile');
   if(input)input.value='';
   const name=document.getElementById('gStatementFileName');
   if(name)name.textContent='Haz clic aquí para elegir un archivo PDF';
   const preview=document.getElementById('gStatementPreview');
   if(preview)preview.style.display='none';
+  const rewards=document.getElementById('gStatementRewards');if(rewards){rewards.style.display='none';rewards.innerHTML=''}
+  const financing=document.getElementById('gStatementFinancing');if(financing){financing.style.display='none';financing.innerHTML=''}
   const dbg=document.getElementById('gStatementOcr');
   if(dbg)dbg.value='';
-  setStatementStatus('Selecciona un estado de cuenta HSBC 2Now.');
+  setStatementStatus('Selecciona un estado de cuenta. La detección es automática.');
 }
 
 
@@ -1055,6 +1353,15 @@ function injectStyles(){
     #gastos .g-statement-muted{opacity:.58;background:#f8fafc}
     #gastos .g-statement-debug{display:none;margin-top:12px}
     #gastos .g-statement-debug textarea{width:100%;min-height:150px;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:10px;padding:10px;font:10px ui-monospace,monospace}
+    #gastos .g-statement-extra{margin-top:12px;border:1px solid #dbe7ff;background:#fbfdff;border-radius:12px;padding:12px}
+    #gastos .g-extra-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
+    #gastos .g-extra-title small{color:#667085;font-size:10px}
+    #gastos .g-mini-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    #gastos .g-mini-stats>div{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:10px}
+    #gastos .g-mini-stats small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:800;margin-bottom:4px}
+    #gastos .g-mini-stats strong{font-size:14px;color:#101828}
+    #gastos .g-fin-table{min-width:760px}
+    @media(max-width:820px){#gastos .g-mini-stats{grid-template-columns:1fr 1fr}}
     @media(max-width:820px){#gastos .g-statement-controls{grid-template-columns:1fr}}
 
     @media(max-width:1180px){
@@ -1177,13 +1484,15 @@ function renderShell(){
 
 
       <details class="g-disclosure" id="gStatementSection">
-        <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>HSBC 2Now · OCR local · conceptos simplificados y aprendizaje automático.</small></span></summary>
+        <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>Detección automática · HSBC 2Now + Costco Banamex · MSI, recompensas y aprendizaje.</small></span></summary>
         <div class="g-disclosure-body">
           <div class="g-statement-controls">
             <div class="g-field">
               <label>Perfil bancario</label>
               <select id="gStatementProfile">
+                <option value="auto">Detectar automáticamente</option>
                 <option value="hsbc-2now">HSBC 2Now · Tarjeta de crédito</option>
+                <option value="costco-banamex">Costco Banamex · Tarjeta de crédito</option>
               </select>
             </div>
 
@@ -1194,7 +1503,7 @@ function renderShell(){
 
             <div class="g-field">
               <label>Nombre de la tarjeta</label>
-              <input id="gStatementCardName" type="text" value="HSBC 2Now" placeholder="Ej. HSBC 2Now">
+              <input id="gStatementCardName" type="text" value="HSBC 2Now" placeholder="Se actualizará al detectar la tarjeta">
             </div>
           </div>
 
@@ -1207,11 +1516,14 @@ function renderShell(){
 
           <div class="g-statement-actions">
             <button class="g-btn g-primary" id="gStatementProcess" type="button">Leer estado de cuenta</button>
-            <button class="g-btn" id="gStatementToggleOCR" type="button">Ver OCR</button>
+            <button class="g-btn" id="gStatementToggleOCR" type="button">Ver texto</button>
             <button class="g-btn" id="gStatementClear" type="button">Limpiar</button>
           </div>
 
-          <div class="g-statement-status" id="gStatementStatus">Selecciona un estado de cuenta HSBC 2Now.</div>
+          <div class="g-statement-status" id="gStatementStatus">Selecciona un estado de cuenta. La detección es automática.</div>
+
+          <div class="g-statement-extra" id="gStatementRewards" style="display:none"></div>
+          <div class="g-statement-extra" id="gStatementFinancing" style="display:none"></div>
 
           <div class="g-statement-preview" id="gStatementPreview" style="display:none">
             <div class="g-count-row">
@@ -1586,11 +1898,13 @@ function bindEvents(){
     statementPdfFile=e.target.files?.[0]||null;
     const label=document.getElementById('gStatementFileName');
     if(label)label.textContent=statementPdfFile?`${statementPdfFile.name} · ${(statementPdfFile.size/1024).toFixed(0)} KB`:'Ningún archivo seleccionado';
-    statementMovements=[];
+    statementMovements=[];statementFinancing=[];statementRewards=null;statementDetectedProfile='';
     document.getElementById('gStatementPreview').style.display='none';
-    setStatementStatus(statementPdfFile?'PDF listo para leer.':'Selecciona un estado de cuenta HSBC 2Now.');
+    const rw=document.getElementById('gStatementRewards');if(rw)rw.style.display='none';
+    const fn=document.getElementById('gStatementFinancing');if(fn)fn.style.display='none';
+    setStatementStatus(statementPdfFile?'PDF listo. Detectaré banco y producto al leerlo.':'Selecciona un estado de cuenta.');
   });
-  document.getElementById('gStatementProfile')?.addEventListener('change',e=>statementProfile=e.target.value);
+  document.getElementById('gStatementProfile')?.addEventListener('change',e=>{statementProfile=e.target.value;statementDetectedProfile='';if(statementProfile!=='auto'){const n=document.getElementById('gStatementCardName');if(n)n.value=profileCardName(statementProfile)}});
   document.getElementById('gStatementProcess')?.addEventListener('click',processStatement);
   document.getElementById('gStatementImport')?.addEventListener('click',importSelectedStatementMovements);
   document.getElementById('gStatementClear')?.addEventListener('click',clearStatementReader);
