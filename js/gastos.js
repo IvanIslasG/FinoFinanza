@@ -157,13 +157,21 @@ async function extractPdfText(pdf,pageNums=[]){
 
 function scoreStatementProfile(rawText='',fileName=''){
   const text=norm(`${fileName} ${rawText}`);
-  let hsbc=0,costco=0;
+  let hsbc=0,costco=0,amex=0;
 
   // Costco Banamex suele ser muy explícito en el PDF.
   if(text.includes('costco'))costco+=5;
   if(text.includes('banamex'))costco+=4;
   if(text.includes('tarjeta de credito costco banamex'))costco+=8;
   if(text.includes('reembolso anual'))costco+=3;
+
+  // American Express / Amex
+  if(text.includes('american express'))amex+=6;
+  if(text.includes('americanexpress.com.mx'))amex+=4;
+  if(text.includes('the platinum credit card'))amex+=6;
+  if(text.includes('membership rewards'))amex+=4;
+  if(text.includes('puntos generados en el periodo'))amex+=3;
+  if(text.includes('pago minimo mas meses sin intereses'))amex+=2;
 
   // HSBC 2Now cambia ligeramente de formato entre estados y no siempre
   // conserva la cadena exacta "HSBC 2Now" en la capa de texto.
@@ -174,9 +182,10 @@ function scoreStatementProfile(rawText='',fileName=''){
   if(text.includes('tarjeta de credito hsbc'))hsbc+=3;
   if(text.includes('cargos abonos y compras regulares')||text.includes('cargos, abonos y compras regulares'))hsbc+=2;
 
-  if(costco>=7 && costco>hsbc)return {profile:'costco-banamex',score:costco};
-  if(hsbc>=5 && hsbc>=costco)return {profile:'hsbc-2now',score:hsbc};
-  return {profile:'',score:Math.max(hsbc,costco)};
+  if(amex>=7 && amex>costco && amex>hsbc)return {profile:'amex-platinum',score:amex};
+  if(costco>=7 && costco>hsbc && costco>=amex)return {profile:'costco-banamex',score:costco};
+  if(hsbc>=5 && hsbc>=costco && hsbc>=amex)return {profile:'hsbc-2now',score:hsbc};
+  return {profile:'',score:Math.max(hsbc,costco,amex)};
 }
 
 async function ocrStatementIdentityPages(pdf,pageNums=[1,2]){
@@ -216,6 +225,7 @@ async function detectStatementProfile(pdf,fileName=''){
 
 function profileCardName(profile=''){
   if(profile==='costco-banamex')return 'Costco Banamex';
+  if(profile==='amex-platinum')return 'American Express Platinum';
   if(profile==='hsbc-2now')return 'HSBC 2Now';
   return 'Tarjeta de crédito';
 }
@@ -513,6 +523,159 @@ async function extractCostcoBanamexStatement(pdf,prefetchedPages=[]){
   return {movements,financing,rewards,text,meta:{periodStart:parseCardDate(period[1]||''),periodEnd:parseCardDate(period[2]||''),cutDate:parseCardDate(cut||''),dueDate:parseCardDate(due||'')}};
 }
 
+
+function parseAmexSpanishDate(raw='',yearHint=new Date().getFullYear()){
+  const months={ene:'01',enero:'01',feb:'02',febrero:'02',mar:'03',marzo:'03',abr:'04',abril:'04',may:'05',mayo:'05',jun:'06',junio:'06',jul:'07',julio:'07',ago:'08',agosto:'08',sep:'09',sept:'09',septiembre:'09',oct:'10',octubre:'10',nov:'11',noviembre:'11',dic:'12',diciembre:'12'};
+  const m=String(raw).trim().match(/(\d{1,2})\s+de\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)(?:\s+(\d{4}))?/i);
+  if(!m)return '';
+  const key=norm(m[2]);
+  const mon=months[key]||months[key.slice(0,3)];
+  if(!mon)return '';
+  return `${m[3]||yearHint}-${mon}-${String(m[1]).padStart(2,'0')}`;
+}
+
+function classifyAmexMovement(description='',signedAmount=0,installment=null){
+  const d=norm(description);
+  if(signedAmount<0||d.includes('gracias por su pago')||d.includes('pago en linea')){
+    return {kind:'payment',importable:false,type:'',category:'',concept:'Pago de tarjeta',reason:'Pago/abono: no es gasto nuevo'};
+  }
+  if(d.includes('monto a diferir meses en automatico')){
+    return {kind:'financial',importable:false,type:'corriente',category:'Trámites',concept:'Conversión a Meses en Automático',reason:'Crédito por conversión a MSI: no es gasto nuevo'};
+  }
+  const rule=findStatementRule(description);
+  let concept=rule?.concept||genericStatementConcept(description);
+  let type=rule?.type||'corriente',category=rule?.category||'Otro';
+  if(!rule){
+    if(d.includes('farm'))category='Salud / Farmacia';
+    else if(d.includes('xervigas')||d.includes('gasol'))category='Gasolina';
+    else if(d.includes('sams')||d.includes('soriana')||d.includes('supercenter')||d.includes('bodega'))category='Supermercado';
+    else if(d.includes('home depot')||d.includes('tava home')||d.includes('tuyen'))category='Hogar';
+    else if(d.includes('seguro')||d.includes('mapfre')||d.includes('chubb')||d.includes('gnp')){type='fijo';category='Seguros'}
+    else if(d.includes('uber eats')||d.includes('kfc')||d.includes('rest ')||d.includes('heladeria')||d.includes('krispy')||d.includes('bakery')||d.includes('rock n wok'))category='Comida fuera';
+    else if(d.includes('apple.com/bill')){type='fijo';category='Suscripciones'}
+    else if(d.includes('kigo')||d.includes('parkimov'))category='Transporte';
+  }
+  if(installment){
+    return {kind:'installment',importable:true,concept,type,category,reason:`Mensualidad ${installment.number} de ${installment.total}`,installmentNumber:installment.number,installments:installment.total};
+  }
+  return {kind:'purchase',importable:true,concept,type,category,reason:rule?.source==='learned'?'Clasificación aprendida':'Compra regular'};
+}
+
+function extractAmexMovements(lines=[],yearHint=2026){
+  const rows=[];
+  let currentBlock=[];
+  let inMsiSection=false;
+  const dateRx=/^(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(.+?)\s+([\d,]+\.\d{2})$/i;
+  const installmentRx=/CARGO\s+0*(\d+)\s+DE\s+0*(\d+)/i;
+
+  const flushHolder=(holder='')=>{
+    for(const r of currentBlock){
+      r.cardholder=holder||'Titular';
+      if(holder && norm(holder)!=='ivan yair islas galvan'){
+        r.selected=false;
+        r.reason=`Tarjeta adicional: ${holder} · ${r.reason}`;
+      }
+      rows.push(r);
+    }
+    currentBlock=[];
+  };
+
+  for(let i=0;i<lines.length;i++){
+    const line=String(lines[i]||'').replace(/\s+/g,' ').trim();
+    if(!line)continue;
+    if(/Transacciones de Meses sin Intereses/i.test(line)){inMsiSection=true;continue}
+    const totalHolder=line.match(/^Total de las transacciones en \$ de\s+(.+?)\s+[\d,]+\.\d{2}$/i);
+    if(totalHolder){flushHolder(totalHolder[1].trim());continue}
+    if(/^Total de Meses sin Intereses/i.test(line)){flushHolder('IVAN YAIR ISLAS GALVAN');inMsiSection=false;continue}
+
+    const m=line.match(dateRx);
+    if(!m)continue;
+    let desc=m[2].trim();
+    const amount=parseMoneyMX(m[3]);
+    let isCredit=false;
+    let installment=null;
+    for(let j=i+1;j<Math.min(lines.length,i+4);j++){
+      const next=String(lines[j]||'').replace(/\s+/g,' ').trim();
+      if(dateRx.test(next)||/^Total de las transacciones/i.test(next)||/^Total de Meses/i.test(next))break;
+      if(/^CR$/i.test(next)){isCredit=true;break}
+      const im=next.match(installmentRx);
+      if(im){installment={number:Number(im[1]),total:Number(im[2])};break}
+    }
+    if(inMsiSection && !installment){
+      const next=String(lines[i+1]||'').replace(/\s+/g,' ').trim();
+      const im=next.match(installmentRx);
+      if(im)installment={number:Number(im[1]),total:Number(im[2])};
+    }
+    const signedAmount=isCredit?-Math.abs(amount):Math.abs(amount);
+    const cls=classifyAmexMovement(desc,signedAmount,installment);
+    currentBlock.push({
+      operationDate:parseAmexSpanishDate(m[1],yearHint),chargeDate:parseAmexSpanishDate(m[1],yearHint),
+      originalDescription:desc,description:cls.concept||genericStatementConcept(desc),amount:Math.abs(amount),signedAmount,
+      ...cls,selected:cls.importable,source:'American Express Platinum',amexMsiSection:inMsiSection
+    });
+  }
+  if(currentBlock.length)flushHolder('IVAN YAIR ISLAS GALVAN');
+
+  // Si Amex revierte una compra para llevarla a "Meses en Automático", no contamos
+  // la compra completa y la mensualidad en el mismo periodo.
+  const deferrals=rows.filter(r=>r.kind==='financial'&&r.signedAmount<0).map(r=>Number(r.amount||0));
+  for(const amount of deferrals){
+    const candidate=[...rows].reverse().find(r=>r.kind==='purchase'&&r.importable&&Math.abs(Number(r.amount||0)-amount)<0.01);
+    if(candidate){candidate.importable=false;candidate.selected=false;candidate.kind='deferred-original';candidate.reason='Compra convertida a Meses en Automático: se contabiliza por mensualidades'}
+  }
+
+  const seen=new Set();
+  return rows.filter(r=>{
+    const key=[r.operationDate,norm(r.originalDescription),r.signedAmount,r.installmentNumber||'',r.installments||'',r.cardholder||''].join('|');
+    if(seen.has(key))return false;seen.add(key);return true;
+  });
+}
+
+function parseAmexFinancing(lines=[],yearHint=2026){
+  const plans=[];
+  const rx=/^(.*?)\s+(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+([\d,]+\.\d{2})\s+([\d.]+)%\s+([\d,]+\.\d{2})\s+(\d+)\s+de\s+(\d+)\s+([\d,]+\.\d{2})$/i;
+  for(const raw of lines){
+    const line=String(raw||'').replace(/\s+/g,' ').trim();
+    const m=line.match(rx);
+    if(!m)continue;
+    plans.push({
+      operationDate:parseAmexSpanishDate(m[2],yearHint),description:genericStatementConcept(m[1]),originalDescription:m[1].trim(),
+      financingType:Number(m[4])===0?'MSI':'CON_INTERESES',originalAmount:parseMoneyMX(m[3]),interestRate:Number(m[4])||0,
+      pendingBalance:parseMoneyMX(m[5]),installmentNumber:Number(m[6]),installments:Number(m[7]),monthlyPayment:parseMoneyMX(m[8]),
+      periodInterest:0,interestTax:0,active:Number(m[6])<Number(m[7])
+    });
+  }
+  return plans;
+}
+
+function parseAmexRewards(text=''){
+  const clean=String(text).replace(/\s+/g,' ');
+  const m=clean.match(/Total Puntos Generados\s+([\d,]+)/i)||clean.match(/Platinum Credit[^\d]{0,80}[\d-]{10,}\s+([\d,]+)/i);
+  if(!m)return null;
+  return {program:'Membership Rewards',pointsEarnedThisPeriod:Number(String(m[1]).replace(/,/g,''))||0};
+}
+
+async function extractAmexStatement(pdf,prefetchedPages=[]){
+  const pageNums=[1,2,3,4,5].filter(n=>n<=pdf.numPages);
+  let pages=prefetchedPages||[];
+  const have=new Set(pages.map(p=>p.pageNum));
+  const missing=pageNums.filter(n=>!have.has(n));
+  if(missing.length)pages=[...pages,...await extractPdfText(pdf,missing)].sort((a,b)=>a.pageNum-b.pageNum);
+  const lines=pages.filter(p=>pageNums.includes(p.pageNum)).flatMap(p=>p.lines||[]);
+  const text=pages.filter(p=>pageNums.includes(p.pageNum)).map(p=>p.text).join('\n');
+  const cutMatch=(text.match(/(?:de Corte|Fecha de Corte)[^\d]{0,40}(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})/i)||[])[1] || (text.match(/(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})\s+(\d{1,2}-[A-Za-zÁÉÍÓÚáéíóú]{3}-\d{4})/)||[])[1];
+  const yearHint=Number((cutMatch||'').match(/(\d{4})/)?.[1])||new Date().getFullYear();
+  const movements=extractAmexMovements(lines,yearHint);
+  const financing=parseAmexFinancing(lines,yearHint);
+  const rewards=parseAmexRewards(text);
+  const period=text.match(/Per[ií]odo de Facturaci[oó]n\s+Del\s+(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+)\s+al\s+(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+)\s+de\s+(\d{4})/i);
+  const due=text.match(/Fecha l[ií]mite de pago:\s*(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+(?:\s+\d{4})?)/i);
+  return {movements,financing,rewards,text,meta:{
+    periodStart:period?parseAmexSpanishDate(period[1],Number(period[3])):'',periodEnd:period?parseAmexSpanishDate(period[2],Number(period[3])):'',
+    cutDate:cutMatch?parseCardDate(cutMatch):'',dueDate:due?parseAmexSpanishDate(due[1],yearHint):''
+  }};
+}
+
 async function renderPdfPageToCanvas(pdf,pageNum,scale=2){
   const page=await pdf.getPage(pageNum);
   const viewport=page.getViewport({scale});
@@ -644,6 +807,15 @@ async function processStatement(){
       statementMeta=parsed.meta||{};
       const dbg=document.getElementById('gStatementOcr');
       if(dbg)dbg.value=parsed.text||'';
+    }else if(profile==='amex-platinum'){
+      setStatementStatus('Leyendo American Express…');
+      const parsed=await extractAmexStatement(statementPdfDoc,prefetched);
+      statementMovements=parsed.movements;
+      statementFinancing=parsed.financing;
+      statementRewards=parsed.rewards;
+      statementMeta=parsed.meta||{};
+      const dbg=document.getElementById('gStatementOcr');
+      if(dbg)dbg.value=parsed.text||'';
     }else{
       throw new Error('Perfil bancario todavía no compatible.');
     }
@@ -749,6 +921,11 @@ function renderStatementExtras(){
           <div><small>Compras elegibles detectadas</small><strong>${money(r.eligiblePurchases||0)}</strong></div>
           <div><small>Cashback estimado próximo abono</small><strong>${money(r.estimatedNextCredit||0)}</strong></div>
           <div><small>Límite estimado por corte</small><strong>${money(r.estimatedMaxCashback||850)}</strong></div>
+        </div>`;
+      }else if(statementDetectedProfile==='amex-platinum'){
+        rewards.innerHTML=`<div class="g-extra-title"><strong>Membership Rewards®</strong><small>Puntos American Express</small></div><div class="g-mini-stats">
+          <div><small>Puntos generados este periodo</small><strong>${Number(r.pointsEarnedThisPeriod||0).toLocaleString('es-MX')}</strong></div>
+          <div><small>Saldo total</small><strong>Consultar en Amex</strong></div>
         </div>`;
       }else{
         rewards.innerHTML=`<div class="g-extra-title"><strong>Reembolso Costco Banamex</strong><small>Programa de beneficios</small></div><div class="g-mini-stats">
@@ -1595,7 +1772,7 @@ function renderShell(){
 
 
       <details class="g-disclosure" id="gStatementSection">
-        <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>Detección automática · HSBC 2Now + Costco Banamex · MSI, recompensas y aprendizaje.</small></span></summary>
+        <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>Detección automática · HSBC 2Now + Costco Banamex + American Express · MSI, recompensas y aprendizaje.</small></span></summary>
         <div class="g-disclosure-body">
           <div class="g-statement-controls">
             <div class="g-field">
@@ -1604,6 +1781,7 @@ function renderShell(){
                 <option value="auto">Detectar automáticamente</option>
                 <option value="hsbc-2now">HSBC 2Now · Tarjeta de crédito</option>
                 <option value="costco-banamex">Costco Banamex · Tarjeta de crédito</option>
+                <option value="amex-platinum">American Express Platinum · Tarjeta de crédito</option>
               </select>
             </div>
 
