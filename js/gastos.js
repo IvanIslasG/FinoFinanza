@@ -19,6 +19,7 @@ const LEGACY_FIXED_TEMPLATES_KEY='finoFinanza.fixedExpenseTemplates';
 const STATEMENT_RULES_KEY='finoFinanza.statementMerchantRules';
 const STATEMENT_FINANCING_KEY='finoFinanza.statementFinancingPlans';
 const CARD_REWARDS_KEY='finoFinanza.cardRewards';
+const MONTHLY_BUDGETS_KEY='finoFinanza.monthlyCategoryBudgets';
 
 const BASE_CATEGORIES={
   fijo:[
@@ -124,6 +125,27 @@ function saveStoredCardReward(cardName,reward){
   const all=getStoredCardRewards();
   all[cardName]={...reward,updatedAt:new Date().toISOString()};
   localStorage.setItem(CARD_REWARDS_KEY,JSON.stringify(all));
+}
+
+function getMonthlyBudgets(){
+  try{
+    const v=JSON.parse(localStorage.getItem(MONTHLY_BUDGETS_KEY)||'{}');
+    return v&&typeof v==='object'?v:{};
+  }catch{return {}}
+}
+function getMonthBudgets(month=''){
+  const all=getMonthlyBudgets();
+  const row=all[month];
+  return row&&typeof row==='object'?row:{};
+}
+function saveMonthCategoryBudget(month,category,amount){
+  if(!month||!category)return;
+  const all=getMonthlyBudgets();
+  all[month]={...(all[month]||{})};
+  const n=Math.max(0,Number(amount||0));
+  if(n>0)all[month][category]=n;
+  else delete all[month][category];
+  localStorage.setItem(MONTHLY_BUDGETS_KEY,JSON.stringify(all));
 }
 
 async function extractPdfPageLines(pdf,pageNum){
@@ -569,11 +591,14 @@ function extractAmexMovements(lines=[],yearHint=2026){
   const installmentRx=/CARGO\s+0*(\d+)\s+DE\s+0*(\d+)/i;
 
   const flushHolder=(holder='')=>{
+    const resolvedHolder=(holder||'IVAN YAIR ISLAS GALVAN').trim();
+    const isAdditional=norm(resolvedHolder)!=='ivan yair islas galvan';
     for(const r of currentBlock){
-      r.cardholder=holder||'Titular';
-      if(holder && norm(holder)!=='ivan yair islas galvan'){
-        r.selected=false;
-        r.reason=`Tarjeta adicional: ${holder} · ${r.reason}`;
+      r.cardholder=resolvedHolder;
+      r.isAdditionalCard=isAdditional;
+      r.selected=r.importable;
+      if(isAdditional){
+        r.reason=`Cuenta adicional: ${resolvedHolder} · ${r.reason}`;
       }
       rows.push(r);
     }
@@ -667,6 +692,16 @@ async function extractAmexStatement(pdf,prefetchedPages=[]){
   const yearHint=Number((cutMatch||'').match(/(\d{4})/)?.[1])||new Date().getFullYear();
   const movements=extractAmexMovements(lines,yearHint);
   const financing=parseAmexFinancing(lines,yearHint);
+  for(const plan of financing){
+    const pd=norm(plan.originalDescription||plan.description||'');
+    const match=movements.find(m=>{
+      const md=norm(m.originalDescription||m.description||'');
+      if(pd && md && (md.includes(pd)||pd.includes(md)))return true;
+      return plan.monthlyPayment && Math.abs(Number(m.amount||0)-Number(plan.monthlyPayment||0))<0.01 && m.kind==='installment';
+    });
+    plan.cardholder=match?.cardholder||'IVAN YAIR ISLAS GALVAN';
+    plan.isAdditionalCard=norm(plan.cardholder)!=='ivan yair islas galvan';
+  }
   const rewards=parseAmexRewards(text);
   const period=text.match(/Per[ií]odo de Facturaci[oó]n\s+Del\s+(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+)\s+al\s+(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+)\s+de\s+(\d{4})/i);
   const due=text.match(/Fecha l[ií]mite de pago:\s*(\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóú]+(?:\s+\d{4})?)/i);
@@ -829,6 +864,7 @@ async function processStatement(){
     renderStatementExtras();
     persistStatementFinancing();
     if(statementRewards)saveStoredCardReward(statementCardName(),statementRewards);
+    renderCardsDashboard();
 
     const profileLabel=profileCardName(profile);
     setStatementStatus(`${profileLabel} detectada · ${statementMovements.length} movimientos · ${statementFinancing.length} compras/planes a meses.`,'ok');
@@ -849,6 +885,7 @@ function renderStatementPreview(){
       <td><input type="checkbox" data-st-check="${i}" ${r.selected?'checked':''} ${r.importable?'':'disabled'}></td>
       <td>${fmtDate(r.operationDate)}</td>
       <td>${fmtDate(r.chargeDate)}</td>
+      <td>${esc(r.cardholder||'Principal')}${r.isAdditionalCard?'<br><small class="g-account-badge">Adicional</small>':''}</td>
       <td>
         ${r.importable?`<input class="g-statement-concept" data-st-concept="${i}" value="${esc(r.description)}" aria-label="Concepto simplificado">`:`<strong>${esc(r.description)}</strong>`}
         ${r.originalDescription?`<br><small class="g-original-desc" title="Descripción original del banco">${esc(r.originalDescription)}</small>`:''}
@@ -943,8 +980,9 @@ function renderStatementExtras(){
       financing.style.display='';
       const nextCommitment=statementFinancing.filter(x=>x.active!==false).reduce((s,x)=>s+Number(x.monthlyPayment||0),0);
       financing.innerHTML=`<div class="g-extra-title"><strong>Compras y planes a meses</strong><small>Compromiso mensual detectado: ${money(nextCommitment)}</small></div>
-      <div class="g-table-wrap"><table class="g-fin-table"><thead><tr><th>Compra / plan</th><th>Tipo</th><th>Original</th><th>Mensualidad</th><th>Avance</th><th>Pendiente</th><th>Tasa</th></tr></thead><tbody>${statementFinancing.map(x=>`<tr>
+      <div class="g-table-wrap"><table class="g-fin-table"><thead><tr><th>Compra / plan</th><th>Cuenta</th><th>Tipo</th><th>Original</th><th>Mensualidad</th><th>Avance</th><th>Pendiente</th><th>Tasa</th></tr></thead><tbody>${statementFinancing.map(x=>`<tr>
         <td><strong>${esc(x.description)}</strong><br><small>${fmtDate(x.operationDate)}</small></td>
+        <td>${esc(x.cardholder||'Principal')}${x.isAdditionalCard?'<br><small class="g-account-badge">Adicional</small>':''}</td>
         <td>${x.financingType==='MSI'?'MSI':'Con intereses'}</td>
         <td class="g-money">${money(x.originalAmount)}</td><td class="g-money">${money(x.monthlyPayment)}</td>
         <td>${x.installmentNumber||'—'} / ${x.installments||'—'}</td><td class="g-money">${money(x.pendingBalance)}</td><td>${Number(x.interestRate||0).toFixed(2)}%</td>
@@ -1003,7 +1041,8 @@ async function importSelectedStatementMovements(){
       x.date===r.operationDate &&
       Math.abs(Number(x.amount||0)-Number(r.amount||0))<0.01 &&
       norm(x.originalDescription||x.description)===norm(r.originalDescription||r.description) &&
-      norm(x.creditCard||'')===norm(card)
+      norm(x.creditCard||'')===norm(card) &&
+      norm(x.cardholder||person)===norm(r.cardholder||person)
     );
     if(duplicate){skipped++;continue}
 
@@ -1017,8 +1056,10 @@ async function importSelectedStatementMovements(){
       amount:Number(r.amount||0),
       paymentMethod:'Tarjeta de crédito',
       creditCard:card,
-      account:'',
-      note:`Importado desde estado de cuenta ${profileCardName(statementDetectedProfile||statementProfile)} · cargo ${fmtDate(r.chargeDate)}`,
+      cardholder:r.cardholder||person,
+      expenseScope:(statementDetectedProfile==='amex-platinum' && r.isAdditionalCard)?'amex-additional':'family',
+      account:(statementDetectedProfile==='amex-platinum' && r.isAdditionalCard)?`American Express · ${r.cardholder}`:'',
+      note:`Importado desde estado de cuenta ${profileCardName(statementDetectedProfile||statementProfile)} · cuenta ${r.cardholder||person} · cargo ${fmtDate(r.chargeDate)}`,
       source:`statement-${statementDetectedProfile||statementProfile}`,
       financing:r.kind==='installment'?{type:'MSI',installmentNumber:r.installmentNumber||null,installments:r.installments||null}:null,
       createdAt:new Date().toISOString(),
@@ -1630,6 +1671,13 @@ function injectStyles(){
     #gastos .g-stat{padding:11px 12px}
     #gastos .g-stat strong{font-size:16px}
     #gastos .g-statement-muted{opacity:.58;background:#f8fafc}
+    #gastos .g-account-badge{display:inline-flex;margin-top:3px;padding:2px 6px;border-radius:999px;background:#fff4ed;color:#b93815;border:1px solid #ffd6ae;font-size:8px;font-weight:900;text-transform:uppercase}
+    #gastos .g-additional-summary{display:none;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
+    #gastos .g-additional-summary.show{display:grid}
+    #gastos .g-additional-card{border:1px solid #e4e7ec;border-radius:12px;padding:11px 12px;background:#fcfcfd}
+    #gastos .g-additional-card small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:800;margin-bottom:5px}
+    #gastos .g-additional-card strong{display:block;color:#101828;font-size:14px}
+    #gastos .g-additional-card span{display:block;margin-top:4px;color:#667085;font-size:9px}
     #gastos .g-statement-debug{display:none;margin-top:12px}
     #gastos .g-statement-debug textarea{width:100%;min-height:150px;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:10px;padding:10px;font:10px ui-monospace,monospace}
     #gastos .g-statement-extra{margin-top:12px;border:1px solid #dbe7ff;background:#fbfdff;border-radius:12px;padding:12px}
@@ -1650,6 +1698,41 @@ function injectStyles(){
     .g-import-check{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#17b26a;color:#fff;font-size:13px;font-weight:900}
 
     @media(max-width:820px){#gastos .g-mini-stats{grid-template-columns:1fr 1fr}}
+
+    #gastos .g-summary-clean{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(130px,1fr));gap:10px}
+    #gastos .g-stat-hero{border:1px solid #b2ccff;background:#f8fbff;border-radius:16px;padding:16px}
+    #gastos .g-stat-hero small{display:block;color:#475467;font-size:10px;text-transform:uppercase;font-weight:900;margin-bottom:6px}
+    #gastos .g-stat-hero strong{display:block;font-size:25px;color:#101828;line-height:1.1}
+    #gastos .g-stat-hero span{display:block;color:#667085;font-size:10px;margin-top:7px}
+    #gastos .g-stat-mini{border:1px solid #e4e7ec;background:#fff;border-radius:14px;padding:13px}
+    #gastos .g-stat-mini small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:900;margin-bottom:5px}
+    #gastos .g-stat-mini strong{font-size:16px;color:#101828}
+    #gastos .g-insights{display:grid;grid-template-columns:1.2fr 1fr;gap:10px}
+    #gastos .g-insight-card{border:1px solid #e4e7ec;border-radius:14px;padding:14px;background:#fff}
+    #gastos .g-insight-card h4{margin:0 0 8px;font-size:12px}
+    #gastos .g-insight-card p{margin:0;color:#475467;font-size:11px;line-height:1.55}
+    #gastos .g-category-bars{display:grid;gap:8px}
+    #gastos .g-cat-row{display:grid;grid-template-columns:minmax(110px,1fr) minmax(120px,2fr) auto;gap:9px;align-items:center;font-size:10px}
+    #gastos .g-cat-track{height:7px;background:#f2f4f7;border-radius:99px;overflow:hidden}
+    #gastos .g-cat-fill{height:100%;background:currentColor;color:#155eef;border-radius:99px}
+    #gastos .g-budget-box{border:1px solid #e4e7ec;border-radius:14px;background:#fff;padding:14px}
+    #gastos .g-budget-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}
+    #gastos .g-budget-head h4{margin:0;font-size:12px}
+    #gastos .g-budget-summary{display:flex;gap:16px;flex-wrap:wrap;color:#667085;font-size:10px;margin-bottom:10px}
+    #gastos .g-budget-summary strong{color:#101828;font-size:12px}
+    #gastos .g-budget-editor{display:grid;grid-template-columns:1fr 150px auto;gap:8px;align-items:end}
+    #gastos .g-cards-dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:14px}
+    #gastos .g-card-tile{border:1px solid #e4e7ec;border-radius:15px;background:#fff;padding:14px}
+    #gastos .g-card-tile h4{margin:0 0 3px;font-size:13px}
+    #gastos .g-card-tile>small{color:#667085;font-size:9px}
+    #gastos .g-card-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}
+    #gastos .g-card-metric{background:#f8fafc;border-radius:10px;padding:9px}
+    #gastos .g-card-metric small{display:block;color:#667085;font-size:8px;text-transform:uppercase;font-weight:800;margin-bottom:4px}
+    #gastos .g-card-metric strong{font-size:12px;color:#101828}
+    #gastos .g-section-intro{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+    #gastos .g-section-intro h3{margin:0;font-size:15px}
+    #gastos .g-section-intro p{margin:4px 0 0;color:#667085;font-size:10px}
+    #gastos .g-empty-soft{border:1px dashed #d0d5dd;border-radius:13px;padding:18px;text-align:center;color:#667085;font-size:11px;background:#fcfcfd}
     @media(max-width:820px){#gastos .g-statement-controls{grid-template-columns:1fr}}
 
     @media(max-width:1180px){
@@ -1662,6 +1745,8 @@ function injectStyles(){
       #gastos .g-summary{grid-template-columns:1fr 1fr}
       #gastos .g-form-grid,#gastos .g-filter-grid{grid-template-columns:1fr}
       #gastos .g-span2,#gastos .g-filter-grid #gSearch,#gastos .g-date-range{grid-column:auto}
+      #gastos .g-summary-clean,#gastos .g-insights{grid-template-columns:1fr}
+      #gastos .g-budget-editor{grid-template-columns:1fr}
       #gastos .g-date-range{grid-template-columns:1fr}
     }
   `;
@@ -1675,7 +1760,7 @@ function renderShell(){
     <div class="topbar">
       <div>
         <h2>Gastos</h2>
-        <p>Registra y clasifica gastos fijos, corrientes y de manutención.</p>
+        <p>Registra, consulta y entiende tus gastos sin saturar la vista.</p>
       </div>
     </div>
 
@@ -1683,6 +1768,7 @@ function renderShell(){
       <div class="g-main-tabs" role="tablist" aria-label="Vistas de gastos">
         <button class="g-main-tab active" type="button" data-gmain="capture">＋ Registrar gasto</button>
         <button class="g-main-tab" type="button" data-gmain="history">≡ Historial</button>
+        <button class="g-main-tab" type="button" data-gmain="cards">▣ Tarjetas</button>
       </div>
 
       <div class="g-main-pane active" id="gCapturePane" data-gpane="capture">
@@ -1771,7 +1857,20 @@ function renderShell(){
       </section>
 
 
-      <details class="g-disclosure" id="gStatementSection">
+
+      </div>
+
+      <div class="g-main-pane" id="gCardsPane" data-gpane="cards">
+        <section class="g-card">
+          <div class="g-body">
+            <div class="g-section-intro">
+              <div><h3>Centro de tarjetas</h3><p>Recompensas, compras a meses y estados de cuenta en un solo lugar.</p></div>
+            </div>
+            <div class="g-cards-dashboard" id="gCardsDashboard"></div>
+          </div>
+        </section>
+
+        <details class="g-disclosure" id="gStatementSection">
         <summary><span class="g-disclosure-copy"><strong>Lector de estados de cuenta</strong><small>Detección automática · HSBC 2Now + Costco Banamex + American Express · MSI, recompensas y aprendizaje.</small></span></summary>
         <div class="g-disclosure-body">
           <div class="g-statement-controls">
@@ -1827,6 +1926,7 @@ function renderShell(){
                     <th></th>
                     <th>Operación</th>
                     <th>Cargo</th>
+                    <th>Cuenta</th>
                     <th>Concepto</th>
                     <th>Tipo</th>
                     <th>Categoría</th>
@@ -1842,7 +1942,7 @@ function renderShell(){
             <textarea id="gStatementOcr" readonly placeholder="Texto OCR detectado"></textarea>
           </div>
         </div>
-      </details>
+        </details>
       </div>
 
       <div class="g-main-pane" id="gHistoryPane" data-gpane="history">
@@ -1858,12 +1958,28 @@ function renderShell(){
           </div>
         </div>
 
-        <div class="g-summary">
-          <div class="g-stat"><small>Gasto del mes</small><strong id="gMonthTotal">$0.00</strong></div>
-          <div class="g-stat"><small>Fijos</small><strong id="gFixedTotal">$0.00</strong></div>
-          <div class="g-stat current"><small>Corrientes</small><strong id="gCurrentTotal">$0.00</strong></div>
-          <div class="g-stat"><small>Manutención</small><strong id="gMaintenanceTotal">$0.00</strong></div>
+        <div class="g-summary-clean">
+          <div class="g-stat-hero"><small>Gasto familiar del mes</small><strong id="gMonthTotal">$0.00</strong><span id="gMonthVsPrevious">Sin comparación anterior</span></div>
+          <div class="g-stat-mini"><small>Fijos</small><strong id="gFixedTotal">$0.00</strong></div>
+          <div class="g-stat-mini"><small>Corrientes</small><strong id="gCurrentTotal">$0.00</strong></div>
+          <div class="g-stat-mini"><small>Manutención</small><strong id="gMaintenanceTotal">$0.00</strong></div>
         </div>
+
+        <div class="g-insights">
+          <div class="g-insight-card"><h4>¿A dónde se fue el dinero?</h4><div class="g-category-bars" id="gTopCategories"></div></div>
+          <div class="g-insight-card"><h4>Lectura rápida</h4><p id="gMonthlyInsight">Todavía no hay datos suficientes para este mes.</p></div>
+        </div>
+
+        <div class="g-budget-box">
+          <div class="g-budget-head"><h4>Presupuesto por categoría</h4><small style="color:#667085">Opcional · cambia con el mes seleccionado</small></div>
+          <div class="g-budget-summary" id="gBudgetSummary"></div>
+          <div class="g-budget-editor">
+            <div class="g-field"><label>Categoría</label><select id="gBudgetCategory"></select></div>
+            <div class="g-field"><label>Presupuesto</label><input id="gBudgetAmount" type="number" min="0" step="100" placeholder="0.00"></div>
+            <button class="g-btn g-primary" id="gBudgetSave" type="button">Guardar presupuesto</button>
+          </div>
+        </div>
+        <div class="g-additional-summary" id="gAdditionalAccountsSummary"></div>
 
         <div class="g-history-toolbar">
           <div class="g-tabs">
@@ -1883,6 +1999,7 @@ function renderShell(){
           <div class="g-filter-grid">
             <input id="gSearch" type="search" placeholder="Buscar descripción, categoría, cuenta...">
             <select id="gFilterPerson"><option value="">Todas las personas</option></select>
+            <select id="gFilterCardholder"><option value="">Todas las cuentas / tarjetas</option></select>
             <select id="gFilterType">
               <option value="">Todos los tipos</option>
               <option value="fijo">Fijos</option>
@@ -1916,6 +2033,7 @@ function renderShell(){
                   <th style="width:34px;text-align:center"><input id="gSelectAllHistory" type="checkbox" aria-label="Seleccionar todos los gastos visibles"></th>
                   <th class="sortable active" data-gsort="date">Fecha ↕</th>
                   <th class="sortable" data-gsort="person">Persona ↕</th>
+                  <th>Cuenta / tarjeta</th>
                   <th class="sortable" data-gsort="type">Tipo ↕</th>
                   <th class="sortable" data-gsort="category">Categoría ↕</th>
                   <th class="sortable" data-gsort="description">Descripción ↕</th>
@@ -1997,7 +2115,7 @@ function setFormType(type,preserveCategory=false){
 }
 
 function switchGastoMainView(view){
-  gastoMainView=view==='history'?'history':'capture';
+  gastoMainView=['capture','history','cards'].includes(view)?view:'capture';
   document.querySelectorAll('#gastos [data-gmain]').forEach(btn=>{
     btn.classList.toggle('active',btn.dataset.gmain===gastoMainView);
   });
@@ -2005,6 +2123,7 @@ function switchGastoMainView(view){
     pane.classList.toggle('active',pane.dataset.gpane===gastoMainView);
   });
   if(gastoMainView==='history')renderHistory();
+  if(gastoMainView==='cards')renderCardsDashboard();
 }
 
 function addPerson(){
@@ -2113,6 +2232,7 @@ function filters(){
   return {
     q:norm(document.getElementById('gSearch')?.value||''),
     person:document.getElementById('gFilterPerson')?.value||'',
+    cardholder:document.getElementById('gFilterCardholder')?.value||'',
     type:document.getElementById('gFilterType')?.value||'',
     category:document.getElementById('gFilterCategory')?.value||'',
     from:document.getElementById('gFrom')?.value||'',
@@ -2168,15 +2288,131 @@ function renderSummaryMonthSelector(all=[]){
   if(next)next.disabled=idx<0||idx>=chronological.length-1;
 }
 
+
+function rewardPrimaryMetric(reward={}){
+  const program=norm(reward.program||'');
+  if(program.includes('2now'))return {label:'Cashback estimado',value:money(reward.estimatedNextCredit??reward.earnedThisPeriod??reward.currentBalance??0)};
+  if(program.includes('reembolso anual'))return {label:'Reembolso acumulado',value:money(reward.totalAccumulated??reward.availableBalance??reward.earnedThisPeriod??0)};
+  if(program.includes('membership rewards'))return {label:'Puntos del periodo',value:Number(reward.pointsEarnedThisPeriod||0).toLocaleString('es-MX')+' pts'};
+  const nums=Object.values(reward).filter(x=>typeof x==='number');
+  return {label:'Recompensas',value:nums.length?String(nums[0]):'—'};
+}
+
+function renderCardsDashboard(){
+  const wrap=document.getElementById('gCardsDashboard');
+  if(!wrap)return;
+  const rewards=getStoredCardRewards();
+  const plans=getStoredFinancingPlans();
+  const cards=unique([...getCreditCards(),...Object.keys(rewards),...plans.map(x=>x.card).filter(Boolean)]);
+  if(!cards.length){
+    wrap.innerHTML='<div class="g-empty-soft" style="grid-column:1/-1">Todavía no hay tarjetas registradas. Importa un estado de cuenta o registra una compra con tarjeta.</div>';
+    return;
+  }
+  wrap.innerHTML=cards.map(card=>{
+    const r=rewards[card]||null;
+    const active=plans.filter(x=>norm(x.card)===norm(card)&&x.active!==false);
+    const commitment=active.reduce((sum,x)=>sum+Number(x.monthlyPayment||0),0);
+    const pending=active.reduce((sum,x)=>sum+Number(x.pendingBalance||0),0);
+    const reward=rewardPrimaryMetric(r||{});
+    return `<div class="g-card-tile">
+      <h4>${esc(card)}</h4><small>${active.length} plan${active.length===1?'':'es'} activo${active.length===1?'':'s'}</small>
+      <div class="g-card-metrics">
+        <div class="g-card-metric"><small>${esc(reward.label)}</small><strong>${esc(reward.value)}</strong></div>
+        <div class="g-card-metric"><small>Compromiso mensual</small><strong>${money(commitment)}</strong></div>
+        <div class="g-card-metric"><small>Saldo a meses</small><strong>${money(pending)}</strong></div>
+        <div class="g-card-metric"><small>Última lectura</small><strong>${r?.updatedAt?fmtDate(String(r.updatedAt).slice(0,10)):'—'}</strong></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function fillBudgetCategorySelect(){
+  const sel=document.getElementById('gBudgetCategory');
+  if(!sel)return;
+  const old=sel.value;
+  const categories=unique([...getCategories('fijo'),...getCategories('corriente'),...getCategories('manutencion')]).filter(x=>norm(x)!=='otro').sort((a,b)=>a.localeCompare(b,'es'));
+  sel.innerHTML=categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  if(categories.includes(old))sel.value=old;
+  syncBudgetAmount();
+}
+
+function syncBudgetAmount(){
+  const cat=document.getElementById('gBudgetCategory')?.value||'';
+  const input=document.getElementById('gBudgetAmount');
+  if(!input)return;
+  input.value=getMonthBudgets(gastoSummaryMonth||today().slice(0,7))[cat]||'';
+}
+
+async function saveCurrentCategoryBudget(){
+  const cat=document.getElementById('gBudgetCategory')?.value||'';
+  const amount=Number(document.getElementById('gBudgetAmount')?.value||0);
+  if(!cat)return;
+  saveMonthCategoryBudget(gastoSummaryMonth||today().slice(0,7),cat,amount);
+  await renderSummary(await dbGetAll());
+  showGastoToast?.(amount>0?`✓ Presupuesto de ${cat} guardado`:`✓ Presupuesto de ${cat} eliminado`);
+}
+
 async function renderSummary(all){
   renderSummaryMonthSelector(all);
   const month=gastoSummaryMonth||today().slice(0,7);
-  const monthRows=all.filter(x=>String(x.date||'').slice(0,7)===month);
+  const monthAll=all.filter(x=>String(x.date||'').slice(0,7)===month);
+  const monthRows=monthAll.filter(x=>x.expenseScope!=='amex-additional');
   const sum=t=>monthRows.filter(x=>!t||x.type===t).reduce((s,x)=>s+Number(x.amount||0),0);
   document.getElementById('gMonthTotal').textContent=money(sum(''));
   document.getElementById('gFixedTotal').textContent=money(sum('fijo'));
   document.getElementById('gCurrentTotal').textContent=money(sum('corriente'));
   document.getElementById('gMaintenanceTotal').textContent=money(sum('manutencion'));
+
+  const total=sum('');
+  const [yy,mm]=month.split('-').map(Number);
+  const prevDate=new Date(yy,mm-2,1);
+  const prevMonth=`${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,'0')}`;
+  const prevRows=all.filter(x=>String(x.date||'').slice(0,7)===prevMonth&&x.expenseScope!=='amex-additional');
+  const prevTotal=prevRows.reduce((a,x)=>a+Number(x.amount||0),0);
+  const cmp=document.getElementById('gMonthVsPrevious');
+  if(cmp){
+    if(prevTotal>0){const pct=((total-prevTotal)/prevTotal)*100;cmp.textContent=`${pct>=0?'↑':'↓'} ${Math.abs(pct).toFixed(1)}% vs ${monthLabel(prevMonth)}`}
+    else cmp.textContent='Sin comparación anterior';
+  }
+
+  const byCat={};
+  for(const x of monthRows)byCat[x.category||'Otro']=(byCat[x.category||'Otro']||0)+Number(x.amount||0);
+  const catRows=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const top=document.getElementById('gTopCategories');
+  if(top){
+    if(!catRows.length)top.innerHTML='<span style="color:#667085;font-size:10px">Sin gastos registrados.</span>';
+    else top.innerHTML=catRows.slice(0,5).map(([cat,val])=>{const pct=total?Math.min(100,val/total*100):0;return `<div class="g-cat-row"><span>${esc(cat)}</span><div class="g-cat-track"><div class="g-cat-fill" style="width:${pct.toFixed(1)}%"></div></div><strong>${money(val)}</strong></div>`}).join('');
+  }
+
+  const activePlans=getStoredFinancingPlans().filter(x=>x.active!==false);
+  const commitment=activePlans.reduce((a,x)=>a+Number(x.monthlyPayment||0),0);
+  const insight=document.getElementById('gMonthlyInsight');
+  if(insight){
+    const topCat=catRows[0];
+    const compare=prevTotal>0?`${total>=prevTotal?'Gastaste más':'Gastaste menos'} que el mes anterior por ${money(Math.abs(total-prevTotal))}.`:'Todavía no hay un mes anterior comparable.';
+    insight.textContent=catRows.length?`${topCat[0]} fue la categoría principal con ${money(topCat[1])}. ${compare} Actualmente hay ${money(commitment)} en mensualidades detectadas para próximos cortes.`:`No hay gastos familiares registrados en ${monthLabel(month)}.`;
+  }
+
+  const budgets=getMonthBudgets(month);
+  const assigned=Object.values(budgets).reduce((a,x)=>a+Number(x||0),0);
+  const budgetSpent=Object.keys(budgets).reduce((a,cat)=>a+Number(byCat[cat]||0),0);
+  const budgetSummary=document.getElementById('gBudgetSummary');
+  if(budgetSummary){
+    budgetSummary.innerHTML=assigned>0?`<span>Asignado <strong>${money(assigned)}</strong></span><span>Gastado en categorías presupuestadas <strong>${money(budgetSpent)}</strong></span><span>Disponible <strong>${money(Math.max(0,assigned-budgetSpent))}</strong></span>`:'<span>No has definido presupuestos para este mes.</span>';
+  }
+  fillBudgetCategorySelect();
+
+  const additionalWrap=document.getElementById('gAdditionalAccountsSummary');
+  if(additionalWrap){
+    const additional=monthAll.filter(x=>x.expenseScope==='amex-additional');
+    const holders=unique(additional.map(x=>x.cardholder||'Cuenta adicional'));
+    additionalWrap.classList.toggle('show',holders.length>0);
+    additionalWrap.innerHTML=holders.map(holder=>{
+      const rows=additional.filter(x=>(x.cardholder||'Cuenta adicional')===holder);
+      const total=rows.reduce((s,x)=>s+Number(x.amount||0),0);
+      return `<div class="g-additional-card"><small>American Express · cuenta adicional</small><strong>${esc(holder)}</strong><span>${rows.length} movimiento${rows.length===1?'':'s'} · ${money(total)}</span></div>`;
+    }).join('');
+  }
 }
 
 function updateBulkHistoryUI(visibleRows=[]){
@@ -2223,16 +2459,24 @@ async function deleteSelectedGastos(){
 
 async function renderHistory(){
   const all=await dbGetAll();
+  const cardholderFilter=document.getElementById('gFilterCardholder');
+  if(cardholderFilter){
+    const old=cardholderFilter.value;
+    const holders=unique(all.map(x=>x.cardholder).filter(Boolean)).sort((a,b)=>a.localeCompare(b,'es'));
+    cardholderFilter.innerHTML='<option value="">Todas las cuentas / tarjetas</option>'+holders.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
+    if(holders.includes(old))cardholderFilter.value=old;
+  }
   const f=filters();
   let rows=all.filter(x=>{
     if(gastoViewType!=='todos' && x.type!==gastoViewType)return false;
     if(f.person&&x.person!==f.person)return false;
+    if(f.cardholder&&(x.cardholder||'')!==f.cardholder)return false;
     if(f.type&&x.type!==f.type)return false;
     if(f.category&&x.category!==f.category)return false;
     if(f.from&&String(x.date||'')<f.from)return false;
     if(f.to&&String(x.date||'')>f.to)return false;
     if(f.q){
-      const hay=norm([personLabel(x.person),x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
+      const hay=norm([personLabel(x.person),x.cardholder,x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
       if(!hay.includes(f.q))return false;
     }
     return true;
@@ -2248,7 +2492,7 @@ async function renderHistory(){
 
   const body=document.getElementById('gHistoryBody');
   if(!rows.length){
-    body.innerHTML=`<tr><td colspan="9"><div class="g-empty">No hay gastos que coincidan con los filtros.</div></td></tr>`;
+    body.innerHTML=`<tr><td colspan="10"><div class="g-empty">No hay gastos que coincidan con los filtros.</div></td></tr>`;
     updateBulkHistoryUI(rows);
     return;
   }
@@ -2257,6 +2501,7 @@ async function renderHistory(){
       <td style="text-align:center"><input class="g-row-check" type="checkbox" data-select-g="${x.id}" ${selectedGastoIds.has(Number(x.id))?'checked':''} aria-label="Seleccionar gasto"></td>
       <td>${fmtDate(x.date)}</td>
       <td>${esc(personLabel(x.person))}</td>
+      <td>${x.cardholder?`${esc(x.cardholder)}${x.expenseScope==='amex-additional'?'<br><small class="g-account-badge">Adicional</small>':''}`:'—'}</td>
       <td><span class="g-type ${esc(x.type)}">${esc(typeLabel(x.type))}</span></td>
       <td>${esc(x.category)}</td>
       <td><strong>${esc(x.description)}</strong>${x.originalDescription?`<br><small class="g-original-desc">${esc(x.originalDescription)}</small>`:''}${x.account?`<br><small>${esc(x.account)}</small>`:''}</td>
@@ -2284,6 +2529,7 @@ async function renderAll(){
   const all=await dbGetAll();
   await renderSummary(all);
   await renderHistory();
+  renderCardsDashboard();
   document.querySelectorAll('#gastos th[data-gsort]').forEach(th=>{
     th.classList.toggle('active',th.dataset.gsort===gastoSort.key);
   });
@@ -2336,6 +2582,9 @@ function bindEvents(){
     if(idx>=0&&idx<months.length-1){gastoSummaryMonth=months[idx+1];await renderSummary(all)}
   });
 
+  document.getElementById('gBudgetCategory')?.addEventListener('change',syncBudgetAmount);
+  document.getElementById('gBudgetSave')?.addEventListener('click',saveCurrentCategoryBudget);
+
   document.getElementById('gSelectAllHistory')?.addEventListener('change',async e=>{
     const all=await dbGetAll();
     const f=filters();
@@ -2347,7 +2596,7 @@ function bindEvents(){
       if(f.from&&String(x.date||'')<f.from)return false;
       if(f.to&&String(x.date||'')>f.to)return false;
       if(f.q){
-        const hay=norm([personLabel(x.person),x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
+        const hay=norm([personLabel(x.person),x.cardholder,x.category,x.description,x.originalDescription,x.paymentMethod,x.creditCard,x.account,x.note].join(' '));
         if(!hay.includes(f.q))return false;
       }
       return true;
@@ -2376,7 +2625,7 @@ function bindEvents(){
     });
   });
 
-  ['gSearch','gFilterPerson','gFilterType','gFilterCategory','gFrom','gTo'].forEach(id=>{
+  ['gSearch','gFilterPerson','gFilterCardholder','gFilterType','gFilterCategory','gFrom','gTo'].forEach(id=>{
     const el=document.getElementById(id);
     el.addEventListener(id==='gSearch'?'input':'change',renderHistory);
   });
