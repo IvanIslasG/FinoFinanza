@@ -105,25 +105,52 @@ function parseCardDate(raw=''){
   return parseHsbcDate(raw);
 }
 
+function canonicalCardName(value=''){
+  const raw=String(value||'').trim();
+  const n=norm(raw);
+  if(!raw)return '';
+  // Alias de tarjetas: distintas formas de escribir el mismo plástico
+  // deben converger a un solo nombre visible en toda la app.
+  if(n==='amex' || n==='american express' || n.includes('american express platinum') || n.includes('amex platinum')){
+    return 'American Express Platinum';
+  }
+  // HSBC 2Now puede haberse guardado como "2Now", "HSBC 2 Now",
+  // "HSBC 2NOW" o con texto adicional proveniente del lector.
+  const compact=n.replace(/[^a-z0-9]/g,'');
+  if(compact==='2now' || compact.includes('hsbc2now')){
+    return 'HSBC 2Now';
+  }
+  return raw;
+}
+
 function getStoredFinancingPlans(){
   try{
     const v=JSON.parse(localStorage.getItem(STATEMENT_FINANCING_KEY)||'[]');
-    return Array.isArray(v)?v:[];
+    return Array.isArray(v)?v.map(x=>({...x,card:canonicalCardName(x?.card||'')})):[];
   }catch{return []}
 }
 function saveStoredFinancingPlans(v){
-  localStorage.setItem(STATEMENT_FINANCING_KEY,JSON.stringify((v||[]).slice(-500)));
+  const normalized=(v||[]).map(x=>({...x,card:canonicalCardName(x?.card||'')}));
+  localStorage.setItem(STATEMENT_FINANCING_KEY,JSON.stringify(normalized.slice(-500)));
 }
 function getStoredCardRewards(){
   try{
     const v=JSON.parse(localStorage.getItem(CARD_REWARDS_KEY)||'{}');
-    return v&&typeof v==='object'?v:{};
+    if(!v||typeof v!=='object')return {};
+    const out={};
+    for(const [name,reward] of Object.entries(v)){
+      const key=canonicalCardName(name);
+      if(!key)continue;
+      out[key]={...(out[key]||{}),...(reward||{})};
+    }
+    return out;
   }catch{return {}}
 }
 function saveStoredCardReward(cardName,reward){
-  if(!cardName||!reward)return;
+  const canonical=canonicalCardName(cardName);
+  if(!canonical||!reward)return;
   const all=getStoredCardRewards();
-  all[cardName]={...reward,updatedAt:new Date().toISOString()};
+  all[canonical]={...reward,updatedAt:new Date().toISOString()};
   localStorage.setItem(CARD_REWARDS_KEY,JSON.stringify(all));
 }
 
@@ -260,7 +287,7 @@ function persistStatementFinancing(){
   if(!statementFinancing.length)return;
   const current=getStoredFinancingPlans();
   for(const plan of statementFinancing){
-    const item={...plan,card:statementCardName(),person:document.getElementById('gStatementPerson')?.value||'',updatedAt:new Date().toISOString()};
+    const item={...plan,card:canonicalCardName(statementCardName()),person:document.getElementById('gStatementPerson')?.value||'',updatedAt:new Date().toISOString()};
     const key=financingPlanKey(item);
     const idx=current.findIndex(x=>financingPlanKey(x)===key);
     if(idx>=0)current[idx]={...current[idx],...item}; else current.push(item);
@@ -787,7 +814,7 @@ function statementCardName(){
 }
 
 function ensureStatementCardCatalog(){
-  const name=statementCardName();
+  const name=canonicalCardName(statementCardName());
   if(!name)return;
   const cards=getCreditCards();
   if(!cards.some(x=>norm(x)===norm(name))){
@@ -1025,7 +1052,7 @@ async function importSelectedStatementMovements(){
   }
 
   ensureStatementCardCatalog();
-  const card=statementCardName();
+  const card=canonicalCardName(statementCardName());
 
   if(importBtn){
     importBtn.disabled=true;
@@ -1170,11 +1197,11 @@ function saveCategories(type,values){
 function getCreditCards(){
   try{
     const cards=JSON.parse(localStorage.getItem(CREDIT_CARDS_KEY)||'[]');
-    return unique(Array.isArray(cards)?cards:[]);
+    return unique((Array.isArray(cards)?cards:[]).map(canonicalCardName));
   }catch{return []}
 }
 function saveCreditCards(values){
-  localStorage.setItem(CREDIT_CARDS_KEY,JSON.stringify(unique(values)));
+  localStorage.setItem(CREDIT_CARDS_KEY,JSON.stringify(unique((values||[]).map(canonicalCardName))));
 }
 
 
@@ -2303,14 +2330,14 @@ function renderCardsDashboard(){
   if(!wrap)return;
   const rewards=getStoredCardRewards();
   const plans=getStoredFinancingPlans();
-  const cards=unique([...getCreditCards(),...Object.keys(rewards),...plans.map(x=>x.card).filter(Boolean)]);
+  const cards=unique([...getCreditCards(),...Object.keys(rewards),...plans.map(x=>canonicalCardName(x.card)).filter(Boolean)]);
   if(!cards.length){
     wrap.innerHTML='<div class="g-empty-soft" style="grid-column:1/-1">Todavía no hay tarjetas registradas. Importa un estado de cuenta o registra una compra con tarjeta.</div>';
     return;
   }
   wrap.innerHTML=cards.map(card=>{
     const r=rewards[card]||null;
-    const active=plans.filter(x=>norm(x.card)===norm(card)&&x.active!==false);
+    const active=plans.filter(x=>norm(canonicalCardName(x.card))===norm(card)&&x.active!==false);
     const commitment=active.reduce((sum,x)=>sum+Number(x.monthlyPayment||0),0);
     const pending=active.reduce((sum,x)=>sum+Number(x.pendingBalance||0),0);
     const reward=rewardPrimaryMetric(r||{});
