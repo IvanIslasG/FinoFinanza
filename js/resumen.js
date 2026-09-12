@@ -104,8 +104,16 @@ function injectSummaryStyles(){
     #resumen .r-mini{border:1px solid #e4e7ec;border-radius:12px;padding:12px;background:#fcfcfd}
     #resumen .r-mini small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:800;margin-bottom:5px}
     #resumen .r-mini strong{font-size:15px;color:#101828}
-    @media(max-width:980px){#resumen .r-grid{grid-template-columns:1fr 1fr}}
-    @media(max-width:600px){#resumen .r-grid,#resumen .r-breakdown{grid-template-columns:1fr}#resumen .r-card.primary strong{font-size:22px}}
+    #resumen .r-quick-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    #resumen .r-quick{border:1px solid #e4e7ec;border-radius:12px;padding:12px;background:#fff;min-width:0}
+    #resumen .r-quick small{display:block;color:#667085;font-size:9px;text-transform:uppercase;font-weight:800;margin-bottom:6px}
+    #resumen .r-quick strong{display:block;color:#101828;font-size:15px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #resumen .r-quick span{display:block;color:#667085;font-size:10px;margin-top:5px;line-height:1.35}
+    #resumen .r-quick.positive strong{color:#067647}
+    #resumen .r-quick.negative strong{color:#b42318}
+    #resumen .r-comparison{font-weight:800}
+    @media(max-width:980px){#resumen .r-grid{grid-template-columns:1fr 1fr}#resumen .r-quick-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:600px){#resumen .r-grid,#resumen .r-breakdown,#resumen .r-quick-grid{grid-template-columns:1fr}#resumen .r-card.primary strong{font-size:22px}}
   `;
   document.head.appendChild(s);
 }
@@ -138,6 +146,18 @@ function renderShell(){
       </div>
 
       <section class="r-section">
+        <div class="r-head"><div><h3>Lectura rápida del mes</h3><p>Comparaciones y datos clave sin entrar al detalle de movimientos.</p></div></div>
+        <div class="r-body"><div class="r-quick-grid">
+          <div class="r-quick" id="rExpenseCompareCard"><small>Gasto vs. mes anterior</small><strong id="rExpenseCompare">—</strong><span id="rExpenseCompareSub">Sin comparación disponible</span></div>
+          <div class="r-quick" id="rIncomeCompareCard"><small>Ingreso vs. mes anterior</small><strong id="rIncomeCompare">—</strong><span id="rIncomeCompareSub">Sin comparación disponible</span></div>
+          <div class="r-quick" id="rSavingsRateCard"><small>Tasa de balance</small><strong id="rSavingsRate">—</strong><span>Porcentaje de ingresos que quedó libre</span></div>
+          <div class="r-quick"><small>Concepto con mayor gasto</small><strong id="rTopConcept">—</strong><span id="rTopConceptSub">Sin gastos registrados</span></div>
+          <div class="r-quick"><small>Categoría con mayor gasto</small><strong id="rTopCategory">—</strong><span id="rTopCategorySub">Sin gastos registrados</span></div>
+          <div class="r-quick"><small>Movimientos del mes</small><strong id="rExpenseCount">0</strong><span id="rAvgExpense">Promedio por gasto: $0.00</span></div>
+        </div></div>
+      </section>
+
+      <section class="r-section">
         <div class="r-head">
           <div><h3>Evolución financiera</h3><p>Compara cómo cambian los ingresos, los gastos y el balance mes a mes.</p></div>
           <div class="r-chart-controls" aria-label="Series de la gráfica">
@@ -158,6 +178,8 @@ function renderShell(){
         <div class="r-body"><div class="r-breakdown">
           <div class="r-mini"><small>Total de ingresos</small><strong id="rIncomeTotal2">$0.00</strong></div>
           <div class="r-mini"><small>Total de gastos familiares</small><strong id="rExpenseTotal">$0.00</strong></div>
+          <div class="r-mini"><small>Balance histórico</small><strong id="rBalanceTotal">$0.00</strong></div>
+          <div class="r-mini"><small>Gasto mensual promedio</small><strong id="rExpenseAverageMonth">$0.00</strong></div>
         </div></div>
       </section>
     </div>`;
@@ -241,6 +263,39 @@ function syncSeriesToggles(){
   }
 }
 
+function pctChange(current,previous){
+  const c=Number(current||0),p=Number(previous||0);
+  if(p===0)return c===0?null:null;
+  return ((c-p)/Math.abs(p))*100;
+}
+function setCompare(prefix,current,previous,goodWhenLower=false){
+  const strong=document.getElementById(prefix);
+  const sub=document.getElementById(prefix+'Sub');
+  const card=document.getElementById(prefix+'Card');
+  if(!strong||!sub)return;
+  card?.classList.remove('positive','negative');
+  if(previous===0){
+    strong.textContent=current===0?'Sin cambio':'Sin base';
+    sub.textContent=current===0?'Ambos meses están en $0.00':'El mes anterior no tuvo movimientos';
+    return;
+  }
+  const pct=pctChange(current,previous);
+  const diff=current-previous;
+  const up=diff>0;
+  strong.textContent=`${up?'↑':diff<0?'↓':'='} ${Math.abs(pct||0).toFixed(1)}%`;
+  sub.textContent=`${up?'Más':diff<0?'Menos':'Igual'} que el mes anterior · ${money(Math.abs(diff))}`;
+  const favorable=goodWhenLower?!up:up;
+  if(diff!==0)card?.classList.add(favorable?'positive':'negative');
+}
+function topBy(rows,keyFn){
+  const map=new Map();
+  for(const x of rows){
+    const key=String(keyFn(x)||'Sin clasificar').trim()||'Sin clasificar';
+    map.set(key,(map.get(key)||0)+expenseAmount(x));
+  }
+  return [...map.entries()].sort((a,b)=>b[1]-a[1])[0]||null;
+}
+
 async function refreshSummary(){
   const [incomes,expensesRaw]=await Promise.all([
     readStore(SUMMARY_INCOME_DB,SUMMARY_INCOME_STORE),
@@ -264,16 +319,42 @@ async function refreshSummary(){
   const incomeMonth=incomes.filter(x=>incomeDate(x).slice(0,7)===summaryMonth).reduce((s,x)=>s+incomeAmount(x),0);
   const expenseMonth=expenses.filter(x=>String(x.date||'').slice(0,7)===summaryMonth).reduce((s,x)=>s+expenseAmount(x),0);
   const balance=incomeMonth-expenseMonth;
+  const prevMonth=shiftMonth(summaryMonth,-1);
+  const prevIncome=incomes.filter(x=>incomeDate(x).slice(0,7)===prevMonth).reduce((s,x)=>s+incomeAmount(x),0);
+  const prevExpense=expenses.filter(x=>String(x.date||'').slice(0,7)===prevMonth).reduce((s,x)=>s+expenseAmount(x),0);
+  const monthExpenses=expenses.filter(x=>String(x.date||'').slice(0,7)===summaryMonth);
 
   document.getElementById('rIncomeMonth').textContent=money(incomeMonth);
   document.getElementById('rIncomeTotal').textContent=money(incomeTotal);
   document.getElementById('rIncomeTotal2').textContent=money(incomeTotal);
   document.getElementById('rExpenseMonth').textContent=money(expenseMonth);
   document.getElementById('rExpenseTotal').textContent=money(expenseTotal);
+  document.getElementById('rBalanceTotal').textContent=money(incomeTotal-expenseTotal);
+  const expenseMonths=[...new Set(expenses.map(x=>String(x.date||'').slice(0,7)).filter(x=>/^\d{4}-\d{2}$/.test(x)))];
+  document.getElementById('rExpenseAverageMonth').textContent=money(expenseMonths.length?expenseTotal/expenseMonths.length:0);
   document.getElementById('rBalanceMonth').textContent=money(balance);
   document.getElementById('rIncomeMonthSub').textContent=`Ingresos recibidos en ${monthLabel(summaryMonth)}`;
   const bc=document.getElementById('rBalanceCard');
   bc.classList.toggle('positive',balance>0);bc.classList.toggle('negative',balance<0);
+
+  setCompare('rExpenseCompare',expenseMonth,prevExpense,true);
+  setCompare('rIncomeCompare',incomeMonth,prevIncome,false);
+  const savingsRate=incomeMonth>0?(balance/incomeMonth)*100:null;
+  const sr=document.getElementById('rSavingsRate');
+  const src=document.getElementById('rSavingsRateCard');
+  src?.classList.remove('positive','negative');
+  if(sr){
+    sr.textContent=savingsRate===null?'—':`${savingsRate.toFixed(1)}%`;
+    if(savingsRate!==null)src?.classList.add(savingsRate>=0?'positive':'negative');
+  }
+  const topConcept=topBy(monthExpenses,x=>x.description||x.originalDescription||'Sin concepto');
+  const topCategory=topBy(monthExpenses,x=>x.category||'Sin categoría');
+  document.getElementById('rTopConcept').textContent=topConcept?topConcept[0]:'—';
+  document.getElementById('rTopConceptSub').textContent=topConcept?`${money(topConcept[1])} en el mes`:'Sin gastos registrados';
+  document.getElementById('rTopCategory').textContent=topCategory?topCategory[0]:'—';
+  document.getElementById('rTopCategorySub').textContent=topCategory?`${money(topCategory[1])} en el mes`:'Sin gastos registrados';
+  document.getElementById('rExpenseCount').textContent=String(monthExpenses.length);
+  document.getElementById('rAvgExpense').textContent=`Promedio por gasto: ${money(monthExpenses.length?expenseMonth/monthExpenses.length:0)}`;
 
   let allMonths=[...new Set(months)].sort();
   if(!allMonths.length)allMonths=[summaryMonth];
