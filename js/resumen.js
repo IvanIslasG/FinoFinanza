@@ -5,6 +5,7 @@ const SUMMARY_EXPENSE_STORE='gastos';
 
 let summaryMonth='';
 let summaryRange=6;
+let summarySeries={income:true,expense:true,balance:false};
 let summaryObserver=null;
 
 function money(v){
@@ -72,6 +73,10 @@ function injectSummaryStyles(){
     #resumen .r-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
     #resumen .r-month-nav{display:flex;align-items:center;gap:7px}
     #resumen .r-month-nav select,#resumen .r-range{border:1px solid #d0d5dd;border-radius:9px;background:#fff;padding:8px 10px;font-size:11px;color:#344054}
+    #resumen .r-chart-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #resumen .r-toggle{display:inline-flex;align-items:center;gap:6px;border:1px solid #d0d5dd;background:#fff;border-radius:999px;padding:7px 10px;font-size:10px;font-weight:800;color:#475467;cursor:pointer;user-select:none}
+    #resumen .r-toggle input{accent-color:auto}
+    #resumen .r-toggle.active{background:#f8fbff;border-color:#84adff;color:#175cd3}
     #resumen .r-navbtn{width:34px;height:34px;border:1px solid #d0d5dd;border-radius:9px;background:#fff;cursor:pointer;color:#475467;font-weight:900}
     #resumen .r-grid{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:10px}
     #resumen .r-card{background:#fff;border:1px solid #e4e7ec;border-radius:15px;padding:14px;box-shadow:0 1px 2px rgba(16,24,40,.03)}
@@ -92,7 +97,7 @@ function injectSummaryStyles(){
     #resumen .r-legend{display:flex;gap:15px;align-items:center;flex-wrap:wrap;margin-top:9px;color:#667085;font-size:10px}
     #resumen .r-legend span{display:inline-flex;align-items:center;gap:6px}
     #resumen .r-dot{width:9px;height:9px;border-radius:3px;display:inline-block}
-    #resumen .r-dot.income{background:#175cd3}.r-dot.expense{background:#f79009}
+    #resumen .r-dot.income{background:#175cd3}.r-dot.expense{background:#f79009}.r-dot.balance{background:#12b76a}
     #resumen .r-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid #e4e7ec;color:#475467;font-size:10px;line-height:1.5}
     #resumen .r-empty{padding:34px 14px;text-align:center;color:#667085;font-size:11px}
     #resumen .r-breakdown{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -118,9 +123,10 @@ function renderShell(){
           <button class="r-navbtn" id="rNextMonth" type="button" title="Mes siguiente">›</button>
         </div>
         <select class="r-range" id="rRangeSelect" aria-label="Periodo de la gráfica">
-          <option value="6">Gráfica · últimos 6 meses</option>
-          <option value="12">Gráfica · últimos 12 meses</option>
-          <option value="0">Gráfica · todo el historial</option>
+          <option value="6">Últimos 6 meses</option>
+          <option value="12">Últimos 12 meses</option>
+          <option value="year">Este año</option>
+          <option value="0">Todo el historial</option>
         </select>
       </div>
 
@@ -133,11 +139,16 @@ function renderShell(){
 
       <section class="r-section">
         <div class="r-head">
-          <div><h3>Ingresos vs. gastos</h3><p>Comparación mensual para ver si la familia está gastando por encima o por debajo de lo que recibe.</p></div>
+          <div><h3>Evolución financiera</h3><p>Compara cómo cambian los ingresos, los gastos y el balance mes a mes.</p></div>
+          <div class="r-chart-controls" aria-label="Series de la gráfica">
+            <label class="r-toggle active"><input id="rShowIncome" type="checkbox" checked> Ingresos</label>
+            <label class="r-toggle active"><input id="rShowExpense" type="checkbox" checked> Gastos</label>
+            <label class="r-toggle"><input id="rShowBalance" type="checkbox"> Balance</label>
+          </div>
         </div>
         <div class="r-body">
           <div class="r-chart-wrap" id="rChartWrap"></div>
-          <div class="r-legend"><span><i class="r-dot income"></i> Ingresos</span><span><i class="r-dot expense"></i> Gastos</span></div>
+          <div class="r-legend" id="rLegend"></div>
           <div class="r-note" id="rInsight">Aún no hay suficientes datos para generar una lectura del periodo.</div>
         </div>
       </section>
@@ -164,29 +175,70 @@ function buildMonthOptions(months){
 }
 
 function chartSvg(series){
+  const active=[];
+  if(summarySeries.income)active.push({key:'income',label:'Ingresos',stroke:'#175cd3'});
+  if(summarySeries.expense)active.push({key:'expense',label:'Gastos',stroke:'#f79009'});
+  if(summarySeries.balance)active.push({key:'balance',label:'Balance',stroke:'#12b76a'});
   if(!series.length)return '<div class="r-empty">Todavía no hay movimientos para construir la gráfica.</div>';
-  const W=Math.max(620,series.length*86+80),H=285;
-  const pad={l:58,r:18,t:20,b:52};
+  if(!active.length)return '<div class="r-empty">Selecciona al menos una serie para mostrar en la gráfica.</div>';
+
+  const W=Math.max(680,series.length*94+90),H=305;
+  const pad={l:68,r:24,t:24,b:54};
   const plotW=W-pad.l-pad.r,plotH=H-pad.t-pad.b;
-  const max=Math.max(1,...series.flatMap(x=>[x.income,x.expense]));
-  const niceMax=Math.ceil(max/1000)*1000||max;
-  const groupW=plotW/series.length;
-  const barW=Math.min(24,groupW*.28);
-  const y=v=>pad.t+plotH-(v/niceMax)*plotH;
+  const vals=[];
+  for(const d of series)for(const a of active)vals.push(Number(d[a.key]||0));
+  let min=Math.min(0,...vals),max=Math.max(0,...vals);
+  if(min===max){max=min+1}
+  const span=max-min;
+  const stepBase=Math.max(1,span/4);
+  const mag=Math.pow(10,Math.floor(Math.log10(stepBase)));
+  const niceCandidates=[1,2,5,10].map(x=>x*mag);
+  const tickStep=niceCandidates.find(x=>x>=stepBase)||10*mag;
+  min=Math.floor(min/tickStep)*tickStep;
+  max=Math.ceil(max/tickStep)*tickStep;
+  if(min===max)max=min+tickStep;
+  const y=v=>pad.t+(max-v)/(max-min)*plotH;
+  const x=i=>pad.l+(series.length===1?plotW/2:(plotW*i/(series.length-1)));
+
   const grid=[];
   for(let i=0;i<=4;i++){
-    const val=niceMax*(i/4),yy=y(val);
-    grid.push(`<line x1="${pad.l}" y1="${yy}" x2="${W-pad.r}" y2="${yy}" stroke="#eaecf0" stroke-width="1"/><text x="${pad.l-8}" y="${yy+3}" text-anchor="end" font-size="9" fill="#98a2b3">${val>=1000?`${(val/1000).toFixed(val>=10000?0:1)}k`:Math.round(val)}</text>`);
+    const val=min+(max-min)*(i/4),yy=y(val);
+    const label=Math.abs(val)>=1000?`${(val/1000).toFixed(Math.abs(val)>=10000?0:1)}k`:Math.round(val);
+    grid.push(`<line x1="${pad.l}" y1="${yy}" x2="${W-pad.r}" y2="${yy}" stroke="#eaecf0" stroke-width="1"/><text x="${pad.l-9}" y="${yy+3}" text-anchor="end" font-size="9" fill="#98a2b3">${label}</text>`);
   }
-  const bars=series.map((d,i)=>{
-    const cx=pad.l+groupW*i+groupW/2;
-    const yi=y(d.income),ye=y(d.expense);
-    const hi=pad.t+plotH-yi,he=pad.t+plotH-ye;
-    return `<rect x="${cx-barW-2}" y="${yi}" width="${barW}" height="${Math.max(0,hi)}" rx="4" fill="#175cd3"><title>${esc(monthLabel(d.month))} · Ingresos ${money(d.income)}</title></rect>
-      <rect x="${cx+2}" y="${ye}" width="${barW}" height="${Math.max(0,he)}" rx="4" fill="#f79009"><title>${esc(monthLabel(d.month))} · Gastos ${money(d.expense)}</title></rect>
-      <text x="${cx}" y="${H-24}" text-anchor="middle" font-size="9" fill="#667085">${esc(shortMonthLabel(d.month))}</text>`;
+  if(min<0&&max>0){
+    const zeroY=y(0);
+    grid.push(`<line x1="${pad.l}" y1="${zeroY}" x2="${W-pad.r}" y2="${zeroY}" stroke="#98a2b3" stroke-width="1.2"/>`);
+  }
+
+  const lines=active.map(a=>{
+    const pts=series.map((d,i)=>`${x(i)},${y(d[a.key])}`).join(' ');
+    const circles=series.map((d,i)=>`<circle cx="${x(i)}" cy="${y(d[a.key])}" r="4" fill="${a.stroke}" stroke="#fff" stroke-width="2"><title>${esc(monthLabel(d.month))} · ${a.label}: ${money(d[a.key])}</title></circle>`).join('');
+    return `<polyline points="${pts}" fill="none" stroke="${a.stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>${circles}`;
   }).join('');
-  return `<svg class="r-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Gráfica mensual de ingresos y gastos">${grid.join('')}${bars}</svg>`;
+
+  const labels=series.map((d,i)=>`<text x="${x(i)}" y="${H-24}" text-anchor="middle" font-size="9" fill="#667085">${esc(shortMonthLabel(d.month))}</text>`).join('');
+  return `<svg class="r-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Gráfica lineal mensual de evolución financiera">${grid.join('')}${lines}${labels}</svg>`;
+}
+
+function renderLegend(){
+  const legend=document.getElementById('rLegend');
+  if(!legend)return;
+  const items=[];
+  if(summarySeries.income)items.push('<span><i class="r-dot income"></i> Ingresos</span>');
+  if(summarySeries.expense)items.push('<span><i class="r-dot expense"></i> Gastos</span>');
+  if(summarySeries.balance)items.push('<span><i class="r-dot balance"></i> Balance</span>');
+  legend.innerHTML=items.join('');
+}
+
+function syncSeriesToggles(){
+  const defs=[['rShowIncome','income'],['rShowExpense','expense'],['rShowBalance','balance']];
+  for(const [id,key] of defs){
+    const input=document.getElementById(id);
+    if(!input)continue;
+    input.checked=Boolean(summarySeries[key]);
+    input.closest('.r-toggle')?.classList.toggle('active',Boolean(summarySeries[key]));
+  }
 }
 
 async function refreshSummary(){
@@ -204,6 +256,8 @@ async function refreshSummary(){
     summaryMonth=sorted[0]||todayMonth();
   }
   buildMonthOptions(months);
+  const rangeSelect=document.getElementById('rRangeSelect');
+  if(rangeSelect)rangeSelect.value=String(summaryRange);
 
   const incomeTotal=incomes.reduce((s,x)=>s+incomeAmount(x),0);
   const expenseTotal=expenses.reduce((s,x)=>s+expenseAmount(x),0);
@@ -223,12 +277,19 @@ async function refreshSummary(){
 
   let allMonths=[...new Set(months)].sort();
   if(!allMonths.length)allMonths=[summaryMonth];
-  if(summaryRange>0)allMonths=allMonths.slice(-summaryRange);
-  const series=allMonths.map(month=>({
-    month,
-    income:incomes.filter(x=>incomeDate(x).slice(0,7)===month).reduce((s,x)=>s+incomeAmount(x),0),
-    expense:expenses.filter(x=>String(x.date||'').slice(0,7)===month).reduce((s,x)=>s+expenseAmount(x),0)
-  }));
+  if(summaryRange==='year'){
+    const y=summaryMonth.slice(0,4);
+    allMonths=allMonths.filter(m=>m.startsWith(y+'-'));
+  }else if(Number(summaryRange)>0){
+    allMonths=allMonths.slice(-Number(summaryRange));
+  }
+  const series=allMonths.map(month=>{
+    const income=incomes.filter(x=>incomeDate(x).slice(0,7)===month).reduce((s,x)=>s+incomeAmount(x),0);
+    const expense=expenses.filter(x=>String(x.date||'').slice(0,7)===month).reduce((s,x)=>s+expenseAmount(x),0);
+    return {month,income,expense,balance:income-expense};
+  });
+  syncSeriesToggles();
+  renderLegend();
   document.getElementById('rChartWrap').innerHTML=chartSvg(series);
 
   const periodIncome=series.reduce((s,x)=>s+x.income,0);
@@ -248,7 +309,19 @@ function bindSummaryEvents(){
   document.getElementById('rMonthSelect')?.addEventListener('change',e=>{summaryMonth=e.target.value;refreshSummary()});
   document.getElementById('rPrevMonth')?.addEventListener('click',()=>{summaryMonth=shiftMonth(summaryMonth,-1);refreshSummary()});
   document.getElementById('rNextMonth')?.addEventListener('click',()=>{summaryMonth=shiftMonth(summaryMonth,1);refreshSummary()});
-  document.getElementById('rRangeSelect')?.addEventListener('change',e=>{summaryRange=Number(e.target.value)||0;refreshSummary()});
+  document.getElementById('rRangeSelect')?.addEventListener('change',e=>{summaryRange=e.target.value==='year'?'year':(Number(e.target.value)||0);refreshSummary()});
+  [['rShowIncome','income'],['rShowExpense','expense'],['rShowBalance','balance']].forEach(([id,key])=>{
+    document.getElementById(id)?.addEventListener('change',e=>{
+      const next={...summarySeries,[key]:e.target.checked};
+      if(!next.income&&!next.expense&&!next.balance){
+        e.target.checked=true;
+        return;
+      }
+      summarySeries=next;
+      syncSeriesToggles();
+      refreshSummary();
+    });
+  });
   window.addEventListener('focus',refreshSummary);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshSummary()});
 
