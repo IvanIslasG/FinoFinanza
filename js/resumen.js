@@ -70,10 +70,10 @@ function injectSummaryStyles(){
   s.id='ff-summary-styles';
   s.textContent=`
     #resumen .r-wrap{display:grid;gap:14px}
-    #resumen .r-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    #resumen .r-toolbar{display:flex;justify-content:flex-start;align-items:center;gap:10px;flex-wrap:wrap}
     #resumen .r-month-nav{display:flex;align-items:center;gap:7px}
     #resumen .r-month-nav select,#resumen .r-range{border:1px solid #d0d5dd;border-radius:9px;background:#fff;padding:8px 10px;font-size:11px;color:#344054}
-    #resumen .r-chart-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #resumen .r-chart-controls{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
     #resumen .r-toggle{display:inline-flex;align-items:center;gap:6px;border:1px solid #d0d5dd;background:#fff;border-radius:999px;padding:7px 10px;font-size:10px;font-weight:800;color:#475467;cursor:pointer;user-select:none}
     #resumen .r-toggle input{accent-color:auto}
     #resumen .r-toggle.active{background:#f8fbff;border-color:#84adff;color:#175cd3}
@@ -91,14 +91,18 @@ function injectSummaryStyles(){
     #resumen .r-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:14px 16px;border-bottom:1px solid #e4e7ec}
     #resumen .r-head h3{margin:0;font-size:14px;color:#101828}
     #resumen .r-head p{margin:4px 0 0;color:#667085;font-size:10px}
+    #resumen .r-chart-head{align-items:center;padding-top:11px;padding-bottom:11px}
+    #resumen .r-chart-head .r-range{padding:6px 9px;font-size:10px}
+    #resumen .r-chart-head .r-toggle{padding:6px 9px;font-size:9px}
+    #resumen .r-chart-body{padding-top:8px;padding-bottom:10px}
     #resumen .r-body{padding:16px}
     #resumen .r-chart-wrap{width:100%;overflow-x:auto}
-    #resumen .r-chart{min-width:620px;height:300px;display:block;width:100%}
-    #resumen .r-legend{display:flex;gap:15px;align-items:center;flex-wrap:wrap;margin-top:9px;color:#667085;font-size:10px}
+    #resumen .r-chart{min-width:620px;height:185px;display:block;width:100%}
+    #resumen .r-legend{display:flex;gap:13px;align-items:center;flex-wrap:wrap;margin-top:5px;color:#667085;font-size:9px}
     #resumen .r-legend span{display:inline-flex;align-items:center;gap:6px}
     #resumen .r-dot{width:9px;height:9px;border-radius:3px;display:inline-block}
     #resumen .r-dot.income{background:#175cd3}.r-dot.expense{background:#f79009}.r-dot.balance{background:#12b76a}
-    #resumen .r-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid #e4e7ec;color:#475467;font-size:10px;line-height:1.5}
+    #resumen .r-note{margin-top:7px;padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #e4e7ec;color:#475467;font-size:10px;line-height:1.5}
     #resumen .r-empty{padding:34px 14px;text-align:center;color:#667085;font-size:11px}
     #resumen .r-breakdown{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     #resumen .r-mini{border:1px solid #e4e7ec;border-radius:12px;padding:12px;background:#fcfcfd}
@@ -130,12 +134,7 @@ function renderShell(){
           <select id="rMonthSelect" aria-label="Mes del resumen"></select>
           <button class="r-navbtn" id="rNextMonth" type="button" title="Mes siguiente">›</button>
         </div>
-        <select class="r-range" id="rRangeSelect" aria-label="Periodo de la gráfica">
-          <option value="6">Últimos 6 meses</option>
-          <option value="12">Últimos 12 meses</option>
-          <option value="year">Este año</option>
-          <option value="0">Todo el historial</option>
-        </select>
+
       </div>
 
       <div class="r-grid">
@@ -158,15 +157,21 @@ function renderShell(){
       </section>
 
       <section class="r-section">
-        <div class="r-head">
-          <div><h3>Evolución financiera</h3><p>Compara cómo cambian los ingresos, los gastos y el balance mes a mes.</p></div>
-          <div class="r-chart-controls" aria-label="Series de la gráfica">
+        <div class="r-head r-chart-head">
+          <div><h3>Evolución financiera</h3><p>Ingresos, gastos y balance mes a mes.</p></div>
+          <div class="r-chart-controls" aria-label="Controles de la gráfica">
+            <select class="r-range" id="rRangeSelect" aria-label="Periodo de la gráfica">
+              <option value="6">6 meses</option>
+              <option value="12">12 meses</option>
+              <option value="year">Este año</option>
+              <option value="0">Todo</option>
+            </select>
             <label class="r-toggle active"><input id="rShowIncome" type="checkbox" checked> Ingresos</label>
             <label class="r-toggle active"><input id="rShowExpense" type="checkbox" checked> Gastos</label>
             <label class="r-toggle"><input id="rShowBalance" type="checkbox"> Balance</label>
           </div>
         </div>
-        <div class="r-body">
+        <div class="r-body r-chart-body">
           <div class="r-chart-wrap" id="rChartWrap"></div>
           <div class="r-legend" id="rLegend"></div>
           <div class="r-note" id="rInsight">Aún no hay suficientes datos para generar una lectura del periodo.</div>
@@ -204,8 +209,8 @@ function chartSvg(series){
   if(!series.length)return '<div class="r-empty">Todavía no hay movimientos para construir la gráfica.</div>';
   if(!active.length)return '<div class="r-empty">Selecciona al menos una serie para mostrar en la gráfica.</div>';
 
-  const W=Math.max(680,series.length*94+90),H=305;
-  const pad={l:68,r:24,t:24,b:54};
+  const W=Math.max(650,series.length*86+80),H=205;
+  const pad={l:60,r:18,t:14,b:38};
   const plotW=W-pad.l-pad.r,plotH=H-pad.t-pad.b;
   const vals=[];
   for(const d of series)for(const a of active)vals.push(Number(d[a.key]||0));
@@ -235,11 +240,11 @@ function chartSvg(series){
 
   const lines=active.map(a=>{
     const pts=series.map((d,i)=>`${x(i)},${y(d[a.key])}`).join(' ');
-    const circles=series.map((d,i)=>`<circle cx="${x(i)}" cy="${y(d[a.key])}" r="4" fill="${a.stroke}" stroke="#fff" stroke-width="2"><title>${esc(monthLabel(d.month))} · ${a.label}: ${money(d[a.key])}</title></circle>`).join('');
-    return `<polyline points="${pts}" fill="none" stroke="${a.stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>${circles}`;
+    const circles=series.map((d,i)=>`<circle cx="${x(i)}" cy="${y(d[a.key])}" r="3" fill="${a.stroke}" stroke="#fff" stroke-width="1.5"><title>${esc(monthLabel(d.month))} · ${a.label}: ${money(d[a.key])}</title></circle>`).join('');
+    return `<polyline points="${pts}" fill="none" stroke="${a.stroke}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>${circles}`;
   }).join('');
 
-  const labels=series.map((d,i)=>`<text x="${x(i)}" y="${H-24}" text-anchor="middle" font-size="9" fill="#667085">${esc(shortMonthLabel(d.month))}</text>`).join('');
+  const labels=series.map((d,i)=>`<text x="${x(i)}" y="${H-14}" text-anchor="middle" font-size="9" fill="#667085">${esc(shortMonthLabel(d.month))}</text>`).join('');
   return `<svg class="r-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Gráfica lineal mensual de evolución financiera">${grid.join('')}${lines}${labels}</svg>`;
 }
 
