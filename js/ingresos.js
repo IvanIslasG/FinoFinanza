@@ -1107,37 +1107,84 @@ function findSepHeaderData(text=''){
 
 function findSepTotals(text='',concepts=[]){
   const flat=normalizeOcrText(text).replace(/\n/g,' ');
-  const explicit=flat.match(/PERCEPCIONES[\s\S]{0,220}?DESCUENTOS[\s\S]{0,220}?([0-9][0-9,]*\.\d{2})[\s\S]{0,120}?([0-9][0-9,]*\.\d{2})[\s\S]{0,120}?([0-9][0-9,]*\.\d{2})/i);
+
+  // En los CFDI de SEP la capa de texto no conserva necesariamente el orden visual
+  // de las columnas. Por eso NO podemos decidir cuál valor es Deducciones y cuál
+  // es Líquido sólo con la ecuación P - D = N: intercambiar D y N también puede
+  // cumplirla. Primero reconstruimos los totales desde los conceptos impresos.
+  const conceptPerceptions=concepts
+    .filter(c=>c.kind==='percepcion')
+    .reduce((s,c)=>s+Number(c.amount||0),0);
+  const conceptDeductions=concepts
+    .filter(c=>['deduccion','impuesto'].includes(c.kind))
+    .reduce((s,c)=>s+Number(c.amount||0),0);
+  const conceptNet=conceptPerceptions-conceptDeductions;
+
+  const tokens=moneyTokens(flat.slice(0,3500)).filter(v=>v>0&&v<1000000);
+  const hasAmount=(value,tolerance=.05)=>tokens.some(v=>Math.abs(v-value)<=tolerance);
+
+  // Si el desglose completo cuadra y los tres totales aparecen impresos en el
+  // encabezado, usamos esas sumas como fuente inequívoca.
+  if(conceptPerceptions>0 && conceptDeductions>=0 && conceptNet>=0 &&
+     hasAmount(conceptPerceptions) && hasAmount(conceptDeductions) && hasAmount(conceptNet)){
+    return {
+      perceptions:Number(conceptPerceptions.toFixed(2)),
+      deductions:Number(conceptDeductions.toFixed(2)),
+      net:Number(conceptNet.toFixed(2)),
+      reliable:true,
+      source:'Conceptos SEP + totales impresos'
+    };
+  }
+
+  // Segundo intento: buscar explícitamente el bloque superior. Aun si la capa de
+  // texto reordena las columnas, elegimos la combinación que más se aproxima a las
+  // sumas de conceptos, evitando la ambigüedad Deducciones/Líquido.
+  const explicit=flat.match(/PERCEPCIONES[\s\S]{0,260}?DESCUENTOS[\s\S]{0,260}?([0-9][0-9,]*\.\d{2})[\s\S]{0,150}?([0-9][0-9,]*\.\d{2})[\s\S]{0,150}?([0-9][0-9,]*\.\d{2})/i);
   if(explicit){
-    const vals=explicit.slice(1,4).map(parseTelmexMoney);
-    for(const p of vals){
-      for(const d of vals){
-        if(d===p)continue;
-        for(const n of vals){
-          if(n===p||n===d)continue;
-          if(Math.abs((p-d)-n)<0.05)return {perceptions:p,deductions:d,net:n,reliable:true};
+    const vals=explicit.slice(1,4).map(parseTelmexMoney).filter(Number.isFinite);
+    let best=null;
+    for(const P of vals){
+      for(const D of vals){
+        if(D===P)continue;
+        for(const N of vals){
+          if(N===P||N===D)continue;
+          if(Math.abs((P-D)-N)>=0.05)continue;
+          const score=(conceptPerceptions>0?Math.abs(P-conceptPerceptions):0)+
+            (conceptDeductions>0?Math.abs(D-conceptDeductions):0)+
+            (conceptNet>=0?Math.abs(N-conceptNet):0);
+          if(!best||score<best.score)best={perceptions:P,deductions:D,net:N,reliable:true,score};
         }
       }
     }
+    if(best){delete best.score;return best;}
   }
 
-  const tokens=moneyTokens(flat.slice(0,3500)).filter(v=>v>0&&v<1000000);
+  // Último intento sobre los importes del encabezado, también puntuado contra el
+  // desglose para no intercambiar Deducciones y Líquido.
+  let best=null;
   for(let i=0;i<tokens.length;i++){
     for(let j=0;j<tokens.length;j++){
       if(i===j)continue;
       for(let k=0;k<tokens.length;k++){
         if(k===i||k===j)continue;
         const P=tokens[i],D=tokens[j],N=tokens[k];
-        if(P>D && Math.abs((P-D)-N)<0.05 && P>1000){
-          return {perceptions:P,deductions:D,net:N,reliable:true};
-        }
+        if(!(P>D) || Math.abs((P-D)-N)>=0.05 || P<=1000)continue;
+        const score=(conceptPerceptions>0?Math.abs(P-conceptPerceptions):0)+
+          (conceptDeductions>0?Math.abs(D-conceptDeductions):0)+
+          (conceptNet>=0?Math.abs(N-conceptNet):0);
+        if(!best||score<best.score)best={perceptions:P,deductions:D,net:N,reliable:true,score};
       }
     }
   }
+  if(best){delete best.score;return best;}
 
-  const p=concepts.filter(c=>c.kind==='percepcion').reduce((s,c)=>s+Number(c.amount||0),0);
-  const d=concepts.filter(c=>['deduccion','impuesto'].includes(c.kind)).reduce((s,c)=>s+Number(c.amount||0),0);
-  return {perceptions:p,deductions:d,net:Math.max(0,p-d),reliable:false};
+  return {
+    perceptions:Number(conceptPerceptions.toFixed(2)),
+    deductions:Number(conceptDeductions.toFixed(2)),
+    net:Number(Math.max(0,conceptNet).toFixed(2)),
+    reliable:false,
+    source:'Reconstruido desde conceptos SEP'
+  };
 }
 
 function parseSepPayslipText(text,file){
@@ -1166,7 +1213,7 @@ function parseSepPayslipText(text,file){
     concepts,
     fileName:file?.name||'',
     totalsReliable:Boolean(totals.reliable),
-    totalsSource:totals.reliable?'Totales impresos SEP':'Reconstruido desde conceptos · revisar',
+    totalsSource:totals.source||(totals.reliable?'Totales impresos SEP':'Reconstruido desde conceptos · revisar'),
     centerWork:header.center||'',
     employeeName:nameDetected?'Cárdenas Zechinelli Diana Laura':'',
     ocrText:clean,
