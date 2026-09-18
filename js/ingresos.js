@@ -15,7 +15,7 @@ const INCOME_PEOPLE_KEY='finoFinanza.incomePeople';
 const INCOME_SOURCES_KEY='finoFinanza.incomeSources';
 const INCOME_CATEGORIES_KEY='finoFinanza.incomeCategories';
 
-const BASE_INCOME_SOURCES=['TELMEX','Renta','Trabajo extra','Venta','Devolución','Regalo','Otro'];
+const BASE_INCOME_SOURCES=['TELMEX','SEP','Renta','Trabajo extra','Venta','Devolución','Regalo','Otro'];
 const BASE_INCOME_CATEGORIES=['Nómina','Renta','Trabajo extra','Venta','Devolución','Regalo','Premio / Bono','Otro'];
 
 
@@ -239,6 +239,7 @@ function injectIncomeStyles(){
     #ingresos .income-pill{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 7px;font-size:9px;font-weight:800;background:#f8fafc;color:#475467;white-space:nowrap}
     #ingresos .income-pill.telmex{background:#eef4ff;color:#3538cd;border-color:#c7d7fe}
     #ingresos .income-pill.yorsky{background:#fdf2fa;color:#c11574;border-color:#fcceee}
+    #ingresos .income-pill.sep{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
     #ingresos .income-pill.manual{background:#ecfdf3;color:#067647;border-color:#abefc6}
     #ingresos .income-pill.payroll{background:#eef4ff;color:#175cd3;border-color:#b2ccff}
     #ingresos .catalog-field-row{display:flex;gap:6px;align-items:center}
@@ -510,7 +511,7 @@ function renderIncomeShell(){
     <div class="topbar">
       <div>
         <h2>Ingresos</h2>
-        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector TELMEX v5.10 · historial responsive</span></p>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector automático TELMEX + SEP · historial responsive</span></p>
       </div>
     </div>
     <div class="income-shell">
@@ -588,14 +589,15 @@ function renderIncomeShell(){
               <div>
                 <div class="income-form-grid" style="margin-bottom:10px">
                   <div class="income-field">
-                    <label>¿De quién es?</label>
+                    <label>Persona (respaldo / genérico)</label>
                     <select id="payslipPerson"></select>
                   </div>
                   <div class="income-field">
                     <label>Perfil de lectura</label>
                     <select id="payslipProfile">
-                      <option value="telmex">TELMEX</option>
-                      <option value="yorsky">Yorsky · manual por ahora</option>
+                      <option value="auto">Detectar automáticamente</option>
+                      <option value="telmex">TELMEX · Iván</option>
+                      <option value="sep">SEP · Diana / Yorsky</option>
                       <option value="generic">Nómina genérica</option>
                     </select>
                   </div>
@@ -623,7 +625,7 @@ function renderIncomeShell(){
                   <button class="income-btn" id="incomeDemoP39" type="button">Ejemplo P39</button>
                 </div>
                 <div class="income-toolbar-note">
-                  TELMEX se lee localmente en tu navegador con PDF.js + OCR + reglas. La primera carga puede tardar mientras se descarga el motor OCR. Yorsky queda preparado para incorporar su perfil cuando tengamos un volante real.
+                  Detección automática por PDF: TELMEX se asigna a Iván y SEP a Diana / Yorsky. Cada archivo se identifica por separado, así que puedes mezclar volantes de ambos en la misma cola. La lectura ocurre localmente con PDF.js + OCR + reglas.
                 </div>
               </div>
 
@@ -631,7 +633,7 @@ function renderIncomeShell(){
                 <div id="incomeBatchPanel" style="display:none;margin-bottom:12px">
                   <div class="income-table-wrap">
                     <table class="income-table" style="min-width:720px">
-                      <thead><tr><th>Archivo</th><th>Fecha</th><th>Periodo</th><th>Neto</th><th>Estado</th><th></th></tr></thead>
+                      <thead><tr><th>Archivo</th><th>Persona</th><th>Perfil</th><th>Fecha</th><th>Periodo</th><th>Neto</th><th>Estado</th><th></th></tr></thead>
                       <tbody id="incomeBatchRows"></tbody>
                     </table>
                   </div>
@@ -644,6 +646,8 @@ function renderIncomeShell(){
                     <div class="income-field"><label>Tipo de volante</label>
                       <select id="previewDocumentType">
                         <option value="Nómina semanal">Nómina semanal</option>
+                        <option value="Nómina ordinaria">Nómina ordinaria</option>
+                        <option value="Nómina quincenal">Nómina quincenal</option>
                         <option value="Nómina extraordinaria">Nómina extraordinaria</option>
                         <option value="Ahorro">Ahorro</option>
                         <option value="Otro">Otro</option>
@@ -653,6 +657,7 @@ function renderIncomeShell(){
                       <select id="previewExtraordinary"><option value="false">No</option><option value="true">Sí</option></select>
                     </div>
                   </div>
+                  <div id="previewDetectedMeta" class="income-toolbar-note" style="margin:0 0 10px;font-weight:800;color:#475467"></div>
                   <div class="income-kpis">
                     <div class="income-kpi"><span>Percepciones</span><strong id="previewPerceptions">$0.00</strong></div>
                     <div class="income-kpi"><span>Deducciones</span><strong id="previewDeductions">$0.00</strong></div>
@@ -886,6 +891,8 @@ function renderBatchQueue(){
     const d=item.data||{};
     return `<tr>
       <td><strong>${esc(item.file.name)}</strong></td>
+      <td>${item.data?esc(personDisplayName(d.person)):'—'}</td>
+      <td>${item.data?esc((d.parserProfile||'').replace('telmex-local-ocr','TELMEX').replace('sep-local','SEP').replace('generic-local-ocr','Genérico')):'—'}</td>
       <td>${d.paymentDate?localDate(d.paymentDate):'—'}</td>
       <td>${esc(d.period||'—')}</td>
       <td>${item.data?money(d.net):'—'}</td>
@@ -992,6 +999,208 @@ function toIsoTelmexDate(raw){
   const mo=String(Number(m[2])).padStart(2,'0');
   return `${m[3]}-${mo}-${d}`;
 }
+
+
+function toIsoAnyDate(raw=''){
+  const m=String(raw||'').match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2})/);
+  if(!m)return '';
+  return `${m[3]}-${String(Number(m[2])).padStart(2,'0')}-${String(Number(m[1])).padStart(2,'0')}`;
+}
+
+function detectPayslipProfileFromText(text='',fileName=''){
+  const t=normalizeSearchText(`${fileName} ${text}`);
+  const sepSignals=[
+    'centro de trabajo','clave de cobro','carrera magisterial','entidad federativa',
+    'fovissste','asignacion docente','sep.gob.mx','secretaria de educacion'
+  ].filter(x=>t.includes(x)).length;
+  const telmexSignals=[
+    'telmex','salario diario','dias periodo','pago neto','sindicalizado',
+    'ayuda renta','ayuda pasajes','tiempo ext doble'
+  ].filter(x=>t.includes(x)).length;
+
+  if(sepSignals>=2)return 'sep';
+  if(telmexSignals>=2)return 'telmex';
+  if(t.includes('cardenas zechinelli diana laura'))return 'sep';
+  if(t.includes('ivan yair islas') && (t.includes('salario diario')||t.includes('telmex')))return 'telmex';
+  return 'generic';
+}
+
+async function detectPayslipProfile(file){
+  try{
+    const pdfjs=await ensurePdfJs();
+    const data=await file.arrayBuffer();
+    const pdf=await pdfjs.getDocument({data}).promise;
+    const page=await pdf.getPage(1);
+    const content=await page.getTextContent();
+    const nativeText=normalizeOcrText(content.items.map(x=>x.str).join(' '));
+    return {profile:detectPayslipProfileFromText(nativeText,file?.name||''),text:nativeText};
+  }catch{
+    return {profile:'generic',text:''};
+  }
+}
+
+const SEP_CONCEPTS=[
+  {code:'CC',description:'Compensación provisional compactable',kind:'percepcion'},
+  {code:'E9',description:'Asignación docente genérica',kind:'percepcion'},
+  {code:'MB',description:'Ajuste para la medida del bienestar',kind:'percepcion'},
+  {code:'Q1',description:'Acreditación por años de servicio en la docencia',kind:'percepcion'},
+  {code:'R9',description:'Equiparación de la asignación docente genérica',kind:'percepcion'},
+  {code:'SC',description:'Asignación por servicios cocurriculares',kind:'percepcion'},
+  {code:'07',description:'Sueldo base',kind:'percepcion'},
+  {code:'38',description:'Despensa',kind:'percepcion'},
+  {code:'39',description:'Material didáctico',kind:'percepcion'},
+  {code:'44',description:'Previsión social múltiple',kind:'percepcion'},
+  {code:'72',description:'Ayuda familiar',kind:'percepcion'},
+  {code:'GF',description:'FIGLOSNTE 23',kind:'deduccion'},
+  {code:'03',description:'Préstamos a corto plazo',kind:'deduccion'},
+  {code:'FH',description:'Fondo de ahorro del retiro (SECC 23)',kind:'deduccion'},
+  {code:'F3',description:'FARC SNTE Sección 23',kind:'deduccion'},
+  {code:'58',description:'Cuotas sindicales S.N.T.E.',kind:'deduccion'},
+  {code:'64D',description:'Rentas FOVISSSTE Fondo de Viviendas',kind:'deduccion'},
+  {code:'02',description:'Seguro de salud invalidez y vida servicios',kind:'deduccion'},
+  {code:'77',description:'Seguro colectivo de retiro (SECORE)',kind:'deduccion'},
+  {code:'04',description:'Seguro de retiro, cesantía en edad avanzada',kind:'deduccion'},
+  {code:'09',description:'Seguro de daños, préstamo FOVISSSTE',kind:'deduccion'},
+  {code:'01',description:'Impuesto sobre la renta',kind:'impuesto'},
+  {code:'23',description:'Seguro colectivo SNTE',kind:'deduccion'}
+];
+
+function escapeRegex(s=''){
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+}
+
+function parseSepConcepts(text=''){
+  const raw=normalizeOcrText(text);
+  const flat=raw.replace(/\n/g,' ');
+  const out=[];
+  for(const def of SEP_CONCEPTS){
+    const aliases=[def.description];
+    if(def.code==='64D')aliases.push('RENTAS FOVISSSTE');
+    if(def.code==='01')aliases.push('IMPUESTO SOBRE LA RENTA');
+    if(def.code==='03')aliases.push('PRESTAMOS A CORTO PLAZO');
+    if(def.code==='GF')aliases.push('FIGLOSNTE 23');
+    let found=null;
+    for(const alias of aliases){
+      const re=new RegExp(`(?:^|\\s)${escapeRegex(def.code)}\\s+${escapeRegex(alias).slice(0,Math.min(28,escapeRegex(alias).length))}[\\s\\S]{0,120}?([0-9][0-9,]*\\.\\d{2})`,'i');
+      const m=flat.match(re);
+      if(m){found=parseTelmexMoney(m[1]);break;}
+    }
+    if(Number.isFinite(found)){
+      out.push({...def,hours:null,days:null,amount:Math.abs(found)});
+    }
+  }
+  return out;
+}
+
+function findSepHeaderData(text=''){
+  const flat=normalizeOcrText(text).replace(/\n/g,' ');
+  const top=flat.slice(0,Math.min(flat.length,5000));
+  const dates=(top.match(/\b\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2}\b/g)||[]).slice(0,6);
+  const paymentDate=dates[0]?toIsoAnyDate(dates[0]):'';
+  const periodStart=dates[1]?toIsoAnyDate(dates[1]):'';
+  const periodEnd=dates[2]?toIsoAnyDate(dates[2]):'';
+  const period=periodStart&&periodEnd?`${periodStart} a ${periodEnd}`:(periodStart||'');
+  const center=(flat.match(/CENTRO\s+DE\s+TRABAJO[\s\S]{0,100}?\b([0-9]{2}[A-Z]{3}\d{4}[A-Z0-9])\b/i)||[])[1]||'';
+  const type=/\bORDINARIA\b/i.test(top)?'Nómina ordinaria':'Nómina';
+  return {paymentDate,period,center,documentType:type};
+}
+
+function findSepTotals(text='',concepts=[]){
+  const flat=normalizeOcrText(text).replace(/\n/g,' ');
+  const explicit=flat.match(/PERCEPCIONES[\s\S]{0,220}?DESCUENTOS[\s\S]{0,220}?([0-9][0-9,]*\.\d{2})[\s\S]{0,120}?([0-9][0-9,]*\.\d{2})[\s\S]{0,120}?([0-9][0-9,]*\.\d{2})/i);
+  if(explicit){
+    const vals=explicit.slice(1,4).map(parseTelmexMoney);
+    for(const p of vals){
+      for(const d of vals){
+        if(d===p)continue;
+        for(const n of vals){
+          if(n===p||n===d)continue;
+          if(Math.abs((p-d)-n)<0.05)return {perceptions:p,deductions:d,net:n,reliable:true};
+        }
+      }
+    }
+  }
+
+  const tokens=moneyTokens(flat.slice(0,3500)).filter(v=>v>0&&v<1000000);
+  for(let i=0;i<tokens.length;i++){
+    for(let j=0;j<tokens.length;j++){
+      if(i===j)continue;
+      for(let k=0;k<tokens.length;k++){
+        if(k===i||k===j)continue;
+        const P=tokens[i],D=tokens[j],N=tokens[k];
+        if(P>D && Math.abs((P-D)-N)<0.05 && P>1000){
+          return {perceptions:P,deductions:D,net:N,reliable:true};
+        }
+      }
+    }
+  }
+
+  const p=concepts.filter(c=>c.kind==='percepcion').reduce((s,c)=>s+Number(c.amount||0),0);
+  const d=concepts.filter(c=>['deduccion','impuesto'].includes(c.kind)).reduce((s,c)=>s+Number(c.amount||0),0);
+  return {perceptions:p,deductions:d,net:Math.max(0,p-d),reliable:false};
+}
+
+function parseSepPayslipText(text,file){
+  const clean=normalizeOcrText(text);
+  const concepts=parseSepConcepts(clean);
+  const header=findSepHeaderData(clean);
+  const totals=findSepTotals(clean,concepts);
+  const taxConcept=concepts.find(c=>c.code==='01'||c.kind==='impuesto');
+  const nameDetected=/CARDENAS\s+ZECHINELLI\s+DIANA\s+LAURA/i.test(clean);
+
+  return {
+    person:'Yorsky',
+    source:'SEP',
+    entryType:'nomina',
+    documentType:header.documentType||'Nómina ordinaria',
+    paymentDate:header.paymentDate,
+    period:header.period,
+    periodDays:0,
+    dailySalary:0,
+    perceptions:Number(totals.perceptions||0),
+    deductions:Number(totals.deductions||0),
+    taxes:Math.abs(Number(taxConcept?.amount||0)),
+    net:Number(totals.net||0),
+    extraordinary:false,
+    parserProfile:'sep-local',
+    concepts,
+    fileName:file?.name||'',
+    totalsReliable:Boolean(totals.reliable),
+    totalsSource:totals.reliable?'Totales impresos SEP':'Reconstruido desde conceptos · revisar',
+    centerWork:header.center||'',
+    employeeName:nameDetected?'Cárdenas Zechinelli Diana Laura':'',
+    ocrText:clean,
+    ocrSource:'Texto interno SEP · primera página',
+    createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+}
+
+async function readSepPdfLocally(file,onProgress=()=>{}){
+  onProgress(8);
+  let extracted;
+  try{
+    extracted=await extractPdfTextAndCanvas(file);
+  }catch(err){
+    throw new Error(`No se pudo abrir el PDF SEP: ${err?.message||err}`);
+  }
+  let text=extracted.nativeText||'';
+  if(text.length<200 || !/percepc|deducc|liquido|centro de trabajo/i.test(text)){
+    onProgress(25);
+    const worker=await getTelmexOcrWorker(p=>onProgress(Math.min(95,25+p*0.7)));
+    try{await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''});}catch{}
+    const result=await worker.recognize(extracted.canvas);
+    text=result?.data?.text||'';
+  }
+  const parsed=parseSepPayslipText(text,file);
+  if(!parsed.totalsReliable && parsed.perceptions>0 && parsed.deductions>=0){
+    const calc=parsed.perceptions-parsed.deductions;
+    if(Math.abs(calc-parsed.net)<0.05)parsed.totalsReliable=true;
+  }
+  onProgress(100);
+  return parsed;
+}
+
 
 function findTelmexDate(text){
   const patterns=[
@@ -1619,30 +1828,40 @@ async function readTelmexPdfLocally(file,onProgress=()=>{}){
 }
 
 async function processOnePayslip(file,person,profile,onProgress=()=>{}){
-  if(profile==='yorsky'){
-    return normalizePayslipData({
-      person:'Yorsky',source:'Nómina Yorsky',paymentDate:'',period:'',
-      perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
-      parserProfile:'yorsky',concepts:[],fileName:file.name,
-      ocrText:'',ocrSource:'Perfil pendiente de construir'
-    },file);
+  let chosenProfile=profile||'auto';
+
+  if(chosenProfile==='auto'){
+    onProgress(2);
+    const detected=await detectPayslipProfile(file);
+    chosenProfile=detected.profile;
   }
 
-  if(profile==='telmex'){
+  if(chosenProfile==='sep'){
+    const data=await readSepPdfLocally(file,onProgress);
+    return normalizePayslipData(data,file);
+  }
+
+  if(chosenProfile==='telmex'){
     const data=await readTelmexPdfLocally(file,onProgress);
     return normalizePayslipData(data,file);
   }
 
-  // Generic profile: try the same OCR engine, but keep it in review mode.
-  const {canvas}=await extractPdfTextAndCanvas(file);
-  const worker=await getTelmexOcrWorker(onProgress);
-  const result=await worker.recognize(canvas);
+  // Generic profile: OCR and keep it in review mode.
+  const extracted=await extractPdfTextAndCanvas(file);
+  let genericText=extracted.nativeText||'';
+  if(genericText.length<160){
+    const worker=await getTelmexOcrWorker(onProgress);
+    const result=await worker.recognize(extracted.canvas);
+    genericText=normalizeOcrText(result?.data?.text||'');
+  }
   return normalizePayslipData({
     person,source:'Nómina',paymentDate:'',period:'',
     perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
     parserProfile:'generic-local-ocr',concepts:[],
-    ocrText:normalizeOcrText(result?.data?.text||''),
-    ocrSource:'OCR genérico · requiere revisión'
+    ocrText:genericText,
+    ocrSource:'Perfil no reconocido · requiere revisión',
+    totalsReliable:false,
+    totalsSource:'No detectado'
   },file);
 }
 
@@ -1689,7 +1908,8 @@ function normalizePayslipData(raw,file=null){
     person:d.person||document.getElementById('payslipPerson').value,
     source:d.source||(
       document.getElementById('payslipProfile').value==='telmex'?'TELMEX':
-      document.getElementById('payslipPerson').value==='Yorsky'?'Nómina Yorsky':'Nómina'
+      document.getElementById('payslipProfile').value==='sep'?'SEP':
+      document.getElementById('payslipPerson').value==='Yorsky'?'SEP':'Nómina'
     ),
     entryType:'nomina',
     documentType:d.documentType||d.tipo_documento||'Nómina',
@@ -1717,6 +1937,8 @@ function normalizePayslipData(raw,file=null){
     ocrSource:d.ocrSource||'',
     totalsSource:d.totalsSource||'',
     totalsReliable:Boolean(d.totalsReliable),
+    centerWork:d.centerWork||d.centroTrabajo||'',
+    employeeName:d.employeeName||d.nombreEmpleado||'',
     createdAt:d.createdAt||new Date().toISOString(),
     updatedAt:new Date().toISOString()
   };
@@ -1850,9 +2072,9 @@ async function analyzeCurrentPayslipWithAi(){
     const merged=normalizePayslipData({
       ...item.data,
       ...result,
-      person:item.data?.person||'Ivan',
-      source:item.data?.source||'TELMEX',
-      parserProfile:'telmex-ai-fallback',
+      person:item.data?.person||document.getElementById('payslipPerson').value,
+      source:item.data?.source||'Nómina',
+      parserProfile:`${item.data?.parserProfile||'generic'}-ai-fallback`,
       fileName:item.file?.name||item.data?.fileName||'',
       ocrText:item.data?.ocrText||'',
       ocrSource:`IA fallback · ${item.data?.ocrSource||'OCR local'}`,
@@ -1899,6 +2121,11 @@ function renderPayslipPreview(raw){
   document.getElementById('previewDeductions').textContent=money(d.deductions);
   document.getElementById('previewTaxes').textContent=money(d.taxes);
   document.getElementById('previewNet').textContent=money(d.net);
+  const detectedMeta=document.getElementById('previewDetectedMeta');
+  if(detectedMeta){
+    const profileLabel=String(d.parserProfile||'').startsWith('sep')?'SEP':String(d.parserProfile||'').startsWith('telmex')?'TELMEX':'Genérico';
+    detectedMeta.textContent=`Detectado: ${profileLabel} · ${personDisplayName(d.person)} · ${d.source||'Nómina'}${d.centerWork?` · Centro ${d.centerWork}`:''}`;
+  }
 
   const ocrDetails=document.getElementById('previewOcrDetails');
   const ocrText=document.getElementById('previewOcrText');
@@ -2103,15 +2330,17 @@ async function renderIncomeHistory(){
     const concept=item.entryType==='manual'
       ? item.concept
       : `${item.documentType||'Nómina'}${item.period?` · ${item.period}`:''}`;
-    const pillClass=isPayrollIncome(item)
-      ? 'payroll'
-      : item.entryType==='manual'
-        ? 'manual'
-        : item.source==='TELMEX'
-          ? 'telmex'
-          : item.person==='Yorsky'
-            ? 'yorsky'
-            : '';
+    const pillClass=item.entryType==='manual'
+      ? 'manual'
+      : item.source==='TELMEX'
+        ? 'telmex'
+        : item.source==='SEP'
+          ? 'sep'
+          : isPayrollIncome(item)
+            ? 'payroll'
+            : item.person==='Yorsky'
+              ? 'yorsky'
+              : '';
     return `<tr class="income-history-row" data-income-id="${item.id}">
       <td>${localDate(item.paymentDate)}</td>
       <td>${esc(personDisplayName(item.person))}</td>
@@ -2181,6 +2410,7 @@ async function showIncomeDetail(id){
         <div class="income-field"><label>Fuente</label><strong>${esc(item.source)}</strong></div>
         <div class="income-field"><label>Fecha de pago</label><strong>${localDate(item.paymentDate)}</strong></div>
         <div class="income-field"><label>Periodo</label><strong>${esc(item.period||'—')}</strong></div>
+        ${item.centerWork?`<div class="income-field"><label>Centro de trabajo</label><strong>${esc(item.centerWork)}</strong></div>`:''}
       </div>
       <div class="income-kpis">
         <div class="income-kpi"><span>Percepciones</span><strong>${money(item.perceptions)}</strong></div>
@@ -2257,8 +2487,9 @@ function bindIncomeEvents(){
 
   document.getElementById('payslipPerson').addEventListener('change',e=>{
     const profile=document.getElementById('payslipProfile');
-    if(!e.target.value)return;
-    profile.value=e.target.value==='Yorsky'?'yorsky':'telmex';
+    if(!e.target.value||profile.value==='auto')return;
+    if(e.target.value==='Yorsky' && profile.value==='telmex')profile.value='sep';
+    if(e.target.value==='Ivan' && profile.value==='sep')profile.value='telmex';
   });
 }
 
