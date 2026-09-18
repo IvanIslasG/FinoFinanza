@@ -1105,6 +1105,62 @@ function findSepHeaderData(text=''){
   return {paymentDate,period,center,documentType:type};
 }
 
+
+async function readSepHeaderTotalsByPosition(file){
+  const pdfjs=await ensurePdfJs();
+  const bytes=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data:bytes}).promise;
+  const page=await pdf.getPage(1);
+  const content=await page.getTextContent();
+
+  const items=(content.items||[]).map(item=>({
+    text:String(item.str||'').trim(),
+    norm:normalizeSearchText(item.str||''),
+    x:Number(item.transform?.[4]||0),
+    y:Number(item.transform?.[5]||0),
+    width:Number(item.width||0)
+  })).filter(item=>item.text);
+
+  const labels={
+    perceptions:items.find(i=>i.norm==='percepciones'),
+    deductions:items.find(i=>i.norm==='descuentos'),
+    net:items.find(i=>i.norm==='liquido') || items.find(i=>i.norm==='liquido neto')
+  };
+
+  const moneyItems=items.map(i=>{
+    const value=parseTelmexMoney(i.text);
+    const looksMoney=/^-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\$?\d+\.\d{2}$/.test(i.text.replace(/\s/g,''));
+    return {...i,value,looksMoney};
+  }).filter(i=>i.looksMoney&&Number.isFinite(i.value));
+
+  function valueUnderLabel(label){
+    if(!label)return null;
+    const center=label.x+(label.width||0)/2;
+    const candidates=moneyItems
+      .filter(i=>Math.abs(i.y-label.y)<=28 && Math.abs((i.x+(i.width||0)/2)-center)<=85)
+      .map(i=>({
+        ...i,
+        score:Math.abs(i.y-label.y)*4 + Math.abs((i.x+(i.width||0)/2)-center)
+      }))
+      .sort((a,b)=>a.score-b.score);
+    return candidates.length?Math.abs(Number(candidates[0].value)):null;
+  }
+
+  const perceptions=valueUnderLabel(labels.perceptions);
+  const deductions=valueUnderLabel(labels.deductions);
+  const net=valueUnderLabel(labels.net);
+  const reliable=[perceptions,deductions,net].every(Number.isFinite) &&
+    Math.abs((perceptions-deductions)-net)<0.05;
+
+  return {
+    perceptions:Number.isFinite(perceptions)?perceptions:0,
+    deductions:Number.isFinite(deductions)?deductions:0,
+    net:Number.isFinite(net)?net:0,
+    reliable,
+    source:'Encabezado SEP por posición de columnas · Percepciones / Descuentos / Líquido'
+  };
+}
+
 function findSepTotals(text='',concepts=[]){
   const flat=normalizeOcrText(text).replace(/\n/g,' ');
 
@@ -1234,12 +1290,32 @@ async function readSepPdfLocally(file,onProgress=()=>{}){
   let text=extracted.nativeText||'';
   if(text.length<200 || !/percepc|deducc|liquido|centro de trabajo/i.test(text)){
     onProgress(25);
-    const worker=await getTelmexOcrWorker(p=>onProgress(Math.min(95,25+p*0.7)));
+    const worker=await getTelmexOcrWorker(p=>onProgress(Math.min(90,25+p*0.65)));
     try{await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''});}catch{}
     const result=await worker.recognize(extracted.canvas);
     text=result?.data?.text||'';
   }
+
   const parsed=parseSepPayslipText(text,file);
+
+  // IMPORTANTE: en los CFDI SEP la capa de texto puede salir en un orden distinto
+  // al orden visual. Por eso "Descuentos" y "Líquido" NO se asignan por secuencia
+  // ni por la ecuación P-D=N. Se leen por la posición real de sus columnas.
+  try{
+    onProgress(92);
+    const headerTotals=await readSepHeaderTotalsByPosition(file);
+    if(headerTotals.reliable){
+      parsed.perceptions=headerTotals.perceptions;
+      parsed.deductions=headerTotals.deductions;
+      parsed.net=headerTotals.net;
+      parsed.totalsReliable=true;
+      parsed.totalsSource=headerTotals.source;
+      parsed.ocrSource=[parsed.ocrSource,'Totales SEP leídos por columnas'].filter(Boolean).join(' · ');
+    }
+  }catch(err){
+    console.warn('No se pudieron leer los totales SEP por posición:',err);
+  }
+
   if(!parsed.totalsReliable && parsed.perceptions>0 && parsed.deductions>=0){
     const calc=parsed.perceptions-parsed.deductions;
     if(Math.abs(calc-parsed.net)<0.05)parsed.totalsReliable=true;
