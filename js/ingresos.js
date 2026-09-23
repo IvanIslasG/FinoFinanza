@@ -31,43 +31,6 @@ const AI_ACCESS_TOKEN_STORAGE_KEY='finoFinanza.aiAccessToken';
 const AI_FALLBACK_VERSION='1.0';
 
 
-const P39_DEMO={
-  person:'Ivan',
-  source:'TELMEX',
-  entryType:'nomina',
-  documentType:'Nómina semanal',
-  paymentDate:'2025-09-28',
-  period:'39/2025',
-  periodDays:7,
-  dailySalary:851.32,
-  perceptions:10703.04,
-  deductions:7692.04,
-  taxes:1177.46,
-  net:3011.00,
-  extraordinary:false,
-  parserProfile:'telmex',
-  concepts:[
-    {code:'03',description:'Sueldo',kind:'percepcion',amount:5959.24},
-    {code:'12',description:'Productividad',kind:'percepcion',amount:1506.37},
-    {code:'13',description:'Manejo',kind:'percepcion',days:5,amount:171.90},
-    {code:'20',description:'Ayuda renta',kind:'percepcion',amount:537.88},
-    {code:'21',description:'Ayuda pasajes',kind:'percepcion',amount:280.91},
-    {code:'22',description:'Ayuda despensa',kind:'percepcion',amount:331.24},
-    {code:'23.1',description:'Tiempo ext doble',kind:'percepcion',hours:3.5,amount:893.90},
-    {code:'24',description:'Indem dia descanso',kind:'percepcion',hours:4,amount:1021.60},
-    {code:'51',description:'Ahorro 11.53%',kind:'ahorro',amount:706.92,accumulated:26946.02},
-    {code:'53',description:'Cuotas sindicales',kind:'deduccion',amount:148.98},
-    {code:'54',description:'Seguro sindicato',kind:'deduccion',amount:265.72},
-    {code:'55',description:'Impuesto',kind:'impuesto',amount:1177.46},
-    {code:'69',description:'Amort INFONAVIT',kind:'deduccion',amount:2455.94},
-    {code:'74',description:'Descuento caja',kind:'deduccion',amount:1639},
-    {code:'93',description:'Retención caja',kind:'deduccion',amount:1000},
-    {code:'95.0',description:'Seguro de vida',kind:'deduccion',amount:119.87},
-    {code:'95.1',description:'Seguro de auto',kind:'deduccion',amount:178},
-    {code:'99',description:'Ajuste redondeo',kind:'deduccion',amount:-0.15}
-  ]
-};
-
 function openIncomeDb(){
   return new Promise((resolve,reject)=>{
     const req=indexedDB.open(INCOME_DB_NAME,INCOME_DB_VERSION);
@@ -622,7 +585,6 @@ function renderIncomeShell(){
                 <div class="income-actions" style="justify-content:flex-start">
                   <button class="income-btn primary" id="incomeProcessPdf" type="button" disabled>Procesar todos</button>
                   <button class="income-btn good" id="saveAllPayslipsBtn" type="button" disabled>Guardar todos los volantes</button>
-                  <button class="income-btn" id="incomeDemoP39" type="button">Ejemplo P39</button>
                 </div>
                 <div class="income-toolbar-note">
                   Detección automática por PDF: TELMEX se asigna a Iván y SEP a Diana / Yorsky. Cada archivo se identifica por separado, así que puedes mezclar volantes de ambos en la misma cola. La lectura ocurre localmente con PDF.js + OCR + reglas.
@@ -2571,17 +2533,6 @@ function bindIncomeEvents(){
   document.getElementById('incomeRemovePdf').addEventListener('click',clearPdfFile);
   document.getElementById('incomeProcessPdf').addEventListener('click',processPayslip);
   document.getElementById('saveAllPayslipsBtn').addEventListener('click',saveAllValidPayslips);
-  document.getElementById('incomeDemoP39').addEventListener('click',()=>{
-    const demoPeople=incomePeople();
-    document.getElementById('payslipPerson').value=demoPeople.includes('Ivan')?'Ivan':(demoPeople[0]||'');
-    document.getElementById('payslipProfile').value='telmex';
-    const fakeFile={name:'P39_demo.pdf',size:0};
-    const data=normalizePayslipData(P39_DEMO,fakeFile);
-    payslipQueue=[{file:fakeFile,status:validationState(data),data,error:null}];
-    renderBatchQueue();
-    openBatchPreview(0);
-    toast('Ejemplo P39 cargado. Revisa y guarda cuando quieras.');
-  });
   document.getElementById('savePayslipBtn').addEventListener('click',savePayslip);
 
   document.getElementById('incomeAiAnalyzeBtn')?.addEventListener('click',analyzeCurrentPayslipWithAi);
