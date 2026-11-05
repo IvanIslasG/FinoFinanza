@@ -1,0 +1,2596 @@
+const INCOME_DB_NAME='FinoFinanzaIngresosDB';
+const INCOME_DB_VERSION=1;
+const INCOME_STORE='ingresos';
+
+let incomeDb=null;
+let selectedIncomeFiles=[];
+let payslipQueue=[];
+let currentPayslipPreview=null;
+let currentPayslipQueueIndex=null;
+let editingIncomeId=null;
+let incomeView='manual';
+let incomeHistorySort={key:'date',dir:'desc'};
+
+const INCOME_PEOPLE_KEY='finoFinanza.incomePeople';
+const INCOME_SOURCES_KEY='finoFinanza.incomeSources';
+const INCOME_CATEGORIES_KEY='finoFinanza.incomeCategories';
+
+const BASE_INCOME_SOURCES=['TELMEX','SEP','Renta','Trabajo extra','Venta','Devolución','Regalo','Otro'];
+const BASE_INCOME_CATEGORIES=['Nómina','Renta','Trabajo extra','Venta','Devolución','Regalo','Premio / Bono','Otro'];
+
+
+let pdfJsReadyPromise=null;
+let tesseractReadyPromise=null;
+let telmexOcrWorker=null;
+
+const PDFJS_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+const PDFJS_WORKER_CDN='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const TESSERACT_CDN='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const AI_ENDPOINT_STORAGE_KEY='finoFinanza.aiFallbackEndpoint';
+const AI_ACCESS_TOKEN_STORAGE_KEY='finoFinanza.aiAccessToken';
+const AI_FALLBACK_VERSION='1.0';
+
+
+function openIncomeDb(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(INCOME_DB_NAME,INCOME_DB_VERSION);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(INCOME_STORE)){
+        const store=db.createObjectStore(INCOME_STORE,{keyPath:'id',autoIncrement:true});
+        store.createIndex('paymentDate','paymentDate',{unique:false});
+        store.createIndex('person','person',{unique:false});
+        store.createIndex('source','source',{unique:false});
+      }
+    };
+    req.onsuccess=()=>{incomeDb=req.result;resolve(incomeDb)};
+    req.onerror=()=>reject(req.error);
+  });
+}
+function incomeGetAll(){
+  return new Promise((resolve,reject)=>{
+    const req=incomeDb.transaction(INCOME_STORE,'readonly').objectStore(INCOME_STORE).getAll();
+    req.onsuccess=()=>resolve(req.result||[]);
+    req.onerror=()=>reject(req.error);
+  });
+}
+function incomeAdd(item){
+  return new Promise((resolve,reject)=>{
+    const req=incomeDb.transaction(INCOME_STORE,'readwrite').objectStore(INCOME_STORE).add(item);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+function incomePut(item){
+  return new Promise((resolve,reject)=>{
+    const req=incomeDb.transaction(INCOME_STORE,'readwrite').objectStore(INCOME_STORE).put(item);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+function incomeDelete(id){
+  return new Promise((resolve,reject)=>{
+    const req=incomeDb.transaction(INCOME_STORE,'readwrite').objectStore(INCOME_STORE).delete(Number(id));
+    req.onsuccess=()=>resolve();
+    req.onerror=()=>reject(req.error);
+  });
+}
+function incomeGet(id){
+  return new Promise((resolve,reject)=>{
+    const req=incomeDb.transaction(INCOME_STORE,'readonly').objectStore(INCOME_STORE).get(Number(id));
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=()=>reject(req.error);
+  });
+}
+
+function esc(v=''){
+  return String(v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+}
+function money(v){
+  return new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(Number(v||0));
+}
+function localDate(iso){
+  if(!iso)return '—';
+  const [y,m,d]=String(iso).slice(0,10).split('-').map(Number);
+  if(!y||!m||!d)return iso;
+  return new Intl.DateTimeFormat('es-MX',{day:'2-digit',month:'short',year:'numeric'}).format(new Date(y,m-1,d));
+}
+function normalizedPerson(v){
+  if(v==='Yorsky')return 'Yorsky';
+  if(v==='Ivan')return 'Iván';
+  return v||'Otro';
+}
+function netFor(item){
+  if(item.entryType==='manual')return Number(item.amount||0);
+  return Number(item.net||0);
+}
+function typeLabel(item){
+  if(item.entryType==='manual')return item.incomeType||'Ingreso';
+  if(item.extraordinary)return 'Nómina extraordinaria';
+  return 'Nómina';
+}
+function monthKey(date){
+  return String(date||'').slice(0,7);
+}
+function toast(text,type='ok'){
+  const el=document.getElementById('incomeToast');
+  if(!el)return;
+  el.className='income-toast show '+type;
+  el.textContent=text;
+  clearTimeout(toast._t);
+  toast._t=setTimeout(()=>el.classList.remove('show'),2600);
+}
+
+function injectIncomeStyles(){
+  if(document.getElementById('finoIncomeStyles'))return;
+  const style=document.createElement('style');
+  style.id='finoIncomeStyles';
+  style.textContent=`
+    #ingresos .income-shell{display:grid;gap:16px}
+    #ingresos .income-tabs{display:flex;gap:7px;flex-wrap:wrap}
+    #ingresos .income-tab{border:1px solid var(--line);background:#fff;color:#475467;border-radius:10px;padding:9px 13px;font-size:12px;font-weight:800;cursor:pointer}
+    #ingresos .income-tab.active{background:#eef4ff;border-color:#b8c8ef;color:var(--accent)}
+    #ingresos .income-pane{display:none}
+    #ingresos .income-pane.active{display:block}
+    #ingresos .income-card{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden}
+    #ingresos .income-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+    #ingresos .income-card-head h3{font-size:14px;margin:0}
+    #ingresos .income-card-head span{font-size:11px;color:var(--muted)}
+    #ingresos .income-card-body{padding:16px}
+    #ingresos .income-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    #ingresos .income-field{display:grid;gap:5px;min-width:0}
+    #ingresos .income-field.full{grid-column:1/-1}
+    #ingresos .income-field label{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#667085;font-weight:800}
+    #ingresos .income-field input,#ingresos .income-field select,#ingresos .income-field textarea{
+      width:100%;min-width:0;border:1px solid var(--line);border-radius:9px;background:#fff;padding:9px 10px;font:inherit;font-size:12px;color:#101828;box-sizing:border-box
+    }
+    #ingresos .income-field textarea{min-height:74px;resize:vertical}
+    #ingresos .income-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
+    #ingresos .income-btn{border:1px solid var(--line);background:#fff;color:#344054;border-radius:9px;padding:9px 12px;font-size:11px;font-weight:800;cursor:pointer}
+    #ingresos .income-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+    #ingresos .income-btn.good{background:#ecfdf3;border-color:#abefc6;color:#067647}
+    #ingresos .income-btn.danger{color:#b42318}
+    #ingresos .income-btn:disabled{opacity:.5;cursor:not-allowed}
+    #ingresos .income-reader-grid{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(0,1.2fr);gap:16px;align-items:start}
+    #ingresos .income-drop{min-height:190px;border:2px dashed #b8c8ef;border-radius:14px;background:#f8faff;display:grid;place-items:center;text-align:center;padding:18px}
+    #ingresos .income-drop.dragover{background:#eef4ff;border-color:var(--accent)}
+    #ingresos .income-drop strong{display:block;margin-bottom:4px}
+    #ingresos .income-drop p{font-size:11px;color:var(--muted);margin:0 0 12px}
+    #ingresos .income-file-meta{display:none;margin-top:9px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;font-size:11px}
+    #ingresos .income-file-meta.show{display:flex;justify-content:space-between;align-items:center;gap:10px}
+    #ingresos .income-selected-files{display:grid;gap:5px;margin-top:8px;max-height:145px;overflow:auto}
+    #ingresos .income-selected-file{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 8px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;font-size:10px}
+    #ingresos .income-selected-file button{border:0;background:transparent;cursor:pointer;color:#b42318;font-size:12px}
+    #ingresos .income-batch-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:800;border:1px solid var(--line);white-space:nowrap}
+    #ingresos .income-batch-status.pending{background:#f8fafc;color:#667085}
+    #ingresos .income-batch-status.processing{background:#eff8ff;color:#175cd3;border-color:#b2ddff}
+    #ingresos .income-batch-status.valid{background:#ecfdf3;color:#067647;border-color:#abefc6}
+    #ingresos .income-batch-status.review{background:#fffaeb;color:#b54708;border-color:#fedf89}
+    #ingresos .income-batch-status.error{background:#fef3f2;color:#b42318;border-color:#fecdca}
+    #ingresos .income-ocr-details{margin-top:9px;border:1px solid var(--line);border-radius:9px;background:#f8fafc}
+    #ingresos .income-ocr-details summary{cursor:pointer;padding:8px 10px;font-size:10px;font-weight:800;color:#475467}
+    #ingresos .income-ocr-text{margin:0;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font:10px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:#475467;border-top:1px solid var(--line)}
+    #ingresos .income-ocr-source{font-size:9px;color:#667085;margin-top:5px}
+    #ingresos .income-ai-panel{margin-top:10px;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fcfcfd}
+    #ingresos .income-ai-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #ingresos .income-ai-note{font-size:9px;color:#667085;line-height:1.45;margin-top:6px}
+    #ingresos .income-ai-btn{border:1px solid #c7d7fe;background:#eef4ff;color:#3538cd;border-radius:9px;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer}
+    #ingresos .income-ai-btn:disabled{opacity:.55;cursor:not-allowed}
+    #ingresos .income-ai-config{display:flex;gap:6px;align-items:center;flex:1;min-width:260px}
+
+    #ingresos .income-ai-config input{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-size:10px}
+
+    
+    #ingresos .income-preview-empty{border:1px dashed var(--line);border-radius:12px;padding:30px 16px;text-align:center;color:var(--muted);font-size:12px}
+    #ingresos .income-preview{display:none}
+    #ingresos .income-preview.show{display:block}
+    #ingresos .income-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+    #ingresos .income-kpi{border:1px solid var(--line);border-radius:11px;padding:11px;background:#f8fafc}
+    #ingresos .income-kpi span{display:block;font-size:9px;color:#667085;text-transform:uppercase;margin-bottom:4px}
+    #ingresos .income-kpi strong{font-size:16px}
+    #ingresos .income-kpi.net{background:#f0fdf4}
+    #ingresos .income-validation{padding:9px 10px;border-radius:9px;border:1px solid var(--line);font-size:11px;margin:8px 0}
+    #ingresos .income-validation.ok{background:#ecfdf3;color:#067647;border-color:#abefc6}
+    #ingresos .income-validation.warn{background:#fffaeb;color:#b54708;border-color:#fedf89}
+    #ingresos .income-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px}
+    #ingresos .income-table{width:100%;border-collapse:collapse;font-size:11px;min-width:760px}
+    #ingresos .income-table th{background:#f8fafc;color:#667085;text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:.03em;padding:9px;border-bottom:1px solid var(--line);white-space:nowrap}
+    #ingresos .income-table td{padding:9px;border-bottom:1px solid #f2f4f7;vertical-align:middle}
+    #ingresos .income-table tbody tr:last-child td{border-bottom:0}
+    #ingresos .income-history-row{cursor:pointer}
+    #ingresos .income-history-row:hover{background:#fafcff}
+    #ingresos .income-pill{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 7px;font-size:9px;font-weight:800;background:#f8fafc;color:#475467;white-space:nowrap}
+    #ingresos .income-pill.telmex{background:#eef4ff;color:#3538cd;border-color:#c7d7fe}
+    #ingresos .income-pill.yorsky{background:#fdf2fa;color:#c11574;border-color:#fcceee}
+    #ingresos .income-pill.sep{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
+    #ingresos .income-pill.manual{background:#ecfdf3;color:#067647;border-color:#abefc6}
+    #ingresos .income-pill.payroll{background:#eef4ff;color:#175cd3;border-color:#b2ccff}
+    #ingresos .catalog-field-row{display:flex;gap:6px;align-items:center}
+    #ingresos .catalog-field-row>select,#ingresos .catalog-field-row>input{flex:1;min-width:0}
+    #ingresos .catalog-add-btn{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#155eef;font-weight:900;cursor:pointer}
+    #ingresos .catalog-add-btn:hover{background:#eef4ff;border-color:#b2ccff}
+    #ingresos .income-table th.sortable{cursor:pointer;user-select:none}
+    #ingresos .income-table th.sortable:hover{background:#eef4ff;color:#175cd3}
+    #ingresos .income-table th.active-sort{background:#eef4ff;color:#175cd3}
+    #ingresos .sort-arrow{margin-left:5px;font-size:9px}
+    #ingresos .income-date-range{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      gap:6px;
+      min-width:0
+    }
+    #ingresos .income-filters>*{min-width:0;width:100%}
+    #ingresos .income-filters input,
+    #ingresos .income-filters select{max-width:100%;min-width:0;box-sizing:border-box}
+    #ingresos .income-date-range input{width:100%;min-width:0;box-sizing:border-box}
+
+    @media(max-width:1180px){
+      #ingresos .income-filters{
+        grid-template-columns:minmax(220px,1.5fr) repeat(2,minmax(150px,1fr));
+      }
+      #ingresos .income-date-range{grid-column:span 2}
+    }
+    @media(max-width:820px){
+      #ingresos .income-filters{
+        grid-template-columns:1fr 1fr;
+      }
+      #ingresos .income-filters #incomeSearch{grid-column:1/-1}
+      #ingresos .income-date-range{grid-column:1/-1}
+    }
+    @media(max-width:560px){
+      #ingresos .income-filters{grid-template-columns:1fr}
+      #ingresos .income-filters #incomeSearch,
+      #ingresos .income-date-range{grid-column:auto}
+      #ingresos .income-date-range{grid-template-columns:1fr}
+    }
+
+    #ingresos .income-filters{
+      display:grid;
+      grid-template-columns:minmax(220px,1.6fr) repeat(3,minmax(150px,1fr)) minmax(260px,1.25fr);
+      gap:8px;
+      margin-bottom:10px;
+      width:100%;
+      min-width:0;
+      align-items:center
+    }
+    #ingresos .income-filters input,#ingresos .income-filters select{width:100%;border:1px solid var(--line);border-radius:9px;padding:8px 9px;font-size:11px;background:#fff}
+    #ingresos .income-summary{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:11px;color:#667085}
+    #ingresos .income-summary strong{color:#101828;font-size:13px}
+    #ingresos .income-row-actions{display:flex;gap:4px}
+    #ingresos .income-icon-btn{width:28px;height:28px;border:1px solid var(--line);background:#fff;border-radius:7px;cursor:pointer}
+    #ingresos .income-icon-btn:hover{background:#f8fafc}
+    #ingresos .income-toolbar-note{font-size:10px;color:#667085;margin-top:8px;line-height:1.45}
+    #ingresos .income-toast{position:fixed;right:20px;bottom:20px;z-index:9999;padding:10px 13px;border-radius:10px;font-size:11px;font-weight:700;box-shadow:0 10px 25px rgba(16,24,40,.12);display:none}
+    #ingresos .income-toast.show{display:block}
+    #ingresos .income-toast.ok{background:#ecfdf3;color:#067647;border:1px solid #abefc6}
+    #ingresos .income-toast.warn{background:#fffaeb;color:#b54708;border:1px solid #fedf89}
+    #ingresos .income-toast.error{background:#fef3f2;color:#b42318;border:1px solid #fecdca}
+    #ingresos .income-modal-backdrop{position:fixed;inset:0;background:rgba(16,24,40,.42);z-index:9997;display:none;place-items:center;padding:20px}
+    #ingresos .income-modal-backdrop.show{display:grid}
+    #ingresos .income-modal{background:#fff;border-radius:16px;width:min(620px,100%);max-height:86vh;overflow:auto;box-shadow:0 25px 60px rgba(16,24,40,.2)}
+    #ingresos .income-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}
+    #ingresos .income-modal-head h3{margin:0;font-size:14px}
+    #ingresos .income-modal-body{padding:16px}
+    #ingresos .income-close{border:0;background:#f2f4f7;border-radius:8px;width:30px;height:30px;cursor:pointer}
+    @media(max-width:850px){
+      #ingresos .income-reader-grid{grid-template-columns:1fr}
+      #ingresos .income-kpis{grid-template-columns:repeat(2,1fr)}
+      #ingresos .income-filters{grid-template-columns:1fr 1fr}
+    }
+    @media(max-width:560px){
+      #ingresos .income-form-grid,#ingresos .income-filters{grid-template-columns:1fr}
+      #ingresos .income-kpis{grid-template-columns:1fr 1fr}
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+
+function uniqueClean(values){
+  return [...new Set((values||[])
+    .map(v=>String(v||'').trim())
+    .filter(Boolean))];
+}
+
+function readLocalList(key,fallback=[]){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(key)||'[]');
+    return uniqueClean([...(Array.isArray(parsed)?parsed:[]),...fallback]);
+  }catch{
+    return uniqueClean(fallback);
+  }
+}
+
+function writeLocalList(key,values){
+  localStorage.setItem(key,JSON.stringify(uniqueClean(values)));
+}
+
+function isFamilyIncomeMode(){
+  // En los dispositivos de Iván/Diana ya existe la clave privada del fallback.
+  // Los testers no la tienen y usan su catálogo local de personas.
+  try{return Boolean(getAiAccessToken());}catch{return false;}
+}
+
+function incomePeople(){
+  if(isFamilyIncomeMode())return ['Ivan','Yorsky'];
+  return readLocalList(INCOME_PEOPLE_KEY,[]);
+}
+
+function incomeSources(){
+  return readLocalList(INCOME_SOURCES_KEY,BASE_INCOME_SOURCES);
+}
+
+function incomeCategories(){
+  // Nómina siempre debe existir y encabezar el catálogo.
+  const values=readLocalList(INCOME_CATEGORIES_KEY,BASE_INCOME_CATEGORIES)
+    .filter(v=>normalizeSearchText(v)!=='nomina');
+  return ['Nómina',...values];
+}
+
+function personDisplayName(value){
+  if(value==='Ivan')return 'Iván';
+  if(value==='Yorsky')return 'Diana / Yorsky';
+  return value||'—';
+}
+
+function fillSelectOptions(select,values,{placeholder='',selected=''}={}){
+  if(!select)return;
+  const list=uniqueClean(values);
+  select.innerHTML=[
+    placeholder?`<option value="">${esc(placeholder)}</option>`:'',
+    ...list.map(v=>`<option value="${esc(v)}">${esc(personDisplayName(v))}</option>`)
+  ].join('');
+  if(selected && list.includes(selected))select.value=selected;
+  else if(!placeholder && list.length)select.value=list[0];
+}
+
+function fillCategoryOptions(selected=''){
+  const select=document.getElementById('manualType');
+  if(!select)return;
+  const values=incomeCategories();
+  select.innerHTML=values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  select.value=values.includes(selected)?selected:(values.includes('Nómina')?'Nómina':values[0]||'');
+}
+
+function fillSourceSuggestions(){
+  const datalist=document.getElementById('incomeSourceSuggestions');
+  if(!datalist)return;
+  datalist.innerHTML=incomeSources().map(v=>`<option value="${esc(v)}"></option>`).join('');
+}
+
+function refreshPeopleUI(selectedManual='',selectedPayslip=''){
+  const people=incomePeople();
+  const family=isFamilyIncomeMode();
+  fillSelectOptions(
+    document.getElementById('manualPerson'),
+    people,
+    {placeholder:family?'':'Da de alta tu nombre',selected:selectedManual}
+  );
+  fillSelectOptions(
+    document.getElementById('payslipPerson'),
+    people,
+    {placeholder:family?'':'Da de alta tu nombre',selected:selectedPayslip}
+  );
+
+  const addBtn=document.getElementById('addIncomePersonBtn');
+  if(addBtn)addBtn.style.display=family?'none':'inline-flex';
+
+  const filter=document.getElementById('incomeFilterPerson');
+  if(filter){
+    const current=filter.value;
+    filter.innerHTML=`<option value="">Todas las personas</option>`+
+      people.map(v=>`<option value="${esc(v)}">${esc(personDisplayName(v))}</option>`).join('');
+    if(people.includes(current))filter.value=current;
+  }
+}
+
+function refreshLocalCatalogUI(){
+  refreshPeopleUI(
+    document.getElementById('manualPerson')?.value||'',
+    document.getElementById('payslipPerson')?.value||''
+  );
+  fillSourceSuggestions();
+  fillCategoryOptions(document.getElementById('manualType')?.value||'');
+}
+
+function addLocalPerson(){
+  if(isFamilyIncomeMode()){
+    toast('En este dispositivo Persona está limitada a Iván y Diana/Yorsky.','warn');
+    return;
+  }
+  const name=prompt('Nombre que quieres dar de alta en este dispositivo:');
+  if(!name?.trim())return;
+  const value=name.trim();
+  const values=readLocalList(INCOME_PEOPLE_KEY,[]);
+  writeLocalList(INCOME_PEOPLE_KEY,[...values,value]);
+  refreshPeopleUI(value,value);
+  toast(`${value} quedó dado de alta localmente.`);
+}
+
+function addLocalSource(){
+  const name=prompt('Nueva fuente de ingreso:');
+  if(!name?.trim())return;
+  const value=name.trim();
+  writeLocalList(INCOME_SOURCES_KEY,[...incomeSources(),value]);
+  fillSourceSuggestions();
+  document.getElementById('manualSource').value=value;
+  toast(`Fuente "${value}" agregada localmente.`);
+}
+
+function addLocalCategory(){
+  const name=prompt('Nueva categoría de ingreso:');
+  if(!name?.trim())return;
+  const raw=name.trim();
+  const value=normalizeSearchText(raw)==='nomina'?'Nómina':raw;
+  writeLocalList(INCOME_CATEGORIES_KEY,[...incomeCategories(),value]);
+  fillCategoryOptions(value);
+  toast(`Categoría "${value}" agregada localmente.`);
+}
+
+function isPayrollIncome(item){
+  if(item?.entryType==='nomina')return true;
+  const category=String(item?.incomeType||item?.documentType||'');
+  return normalizeSearchText(category).includes('nomina');
+}
+
+function historySortValue(item,key){
+  if(key==='date')return String(item.paymentDate||'');
+  if(key==='person')return normalizeSearchText(personDisplayName(item.person));
+  if(key==='source')return normalizeSearchText(item.source||'');
+  if(key==='concept'){
+    return normalizeSearchText(item.entryType==='manual'
+      ? item.concept
+      : `${item.documentType||'Nómina'} ${item.period||''}`);
+  }
+  if(key==='category')return normalizeSearchText(typeLabel(item));
+  if(key==='net')return Number(netFor(item)||0);
+  return '';
+}
+
+function compareHistoryItems(a,b){
+  const key=incomeHistorySort.key;
+  const av=historySortValue(a,key);
+  const bv=historySortValue(b,key);
+  let cmp=0;
+  if(typeof av==='number'&&typeof bv==='number')cmp=av-bv;
+  else cmp=String(av).localeCompare(String(bv),'es',{numeric:true,sensitivity:'base'});
+  if(cmp===0)cmp=Number(a.id||0)-Number(b.id||0);
+  return incomeHistorySort.dir==='asc'?cmp:-cmp;
+}
+
+function updateHistorySortHeaders(){
+  document.querySelectorAll('#ingresos [data-history-sort]').forEach(th=>{
+    const active=th.dataset.historySort===incomeHistorySort.key;
+    th.classList.toggle('active-sort',active);
+    const arrow=th.querySelector('.sort-arrow');
+    if(arrow)arrow.textContent=active?(incomeHistorySort.dir==='asc'?'▲':'▼'):'↕';
+  });
+}
+
+function renderIncomeShell(){
+  const section=document.getElementById('ingresos');
+  if(!section)return;
+  section.innerHTML=`
+    <div class="topbar">
+      <div>
+        <h2>Ingresos</h2>
+        <p>Nómina, volantes e ingresos familiares en un solo historial. <span style="font-size:9px;color:#98a2b3">Lector automático TELMEX + SEP · historial responsive</span></p>
+      </div>
+    </div>
+    <div class="income-shell">
+      <div class="income-tabs">
+        <button class="income-tab active" data-income-view="manual">＋ Registrar ingreso</button>
+        <button class="income-tab" data-income-view="payslip">PDF Volantes</button>
+        <button class="income-tab" data-income-view="history">≡ Historial</button>
+      </div>
+
+      <section class="income-pane active" id="incomePaneManual">
+        <div class="income-card">
+          <div class="income-card-head">
+            <h3 id="manualIncomeTitle">Registrar ingreso</h3>
+            <span>Ingresos que no provienen de un volante</span>
+          </div>
+          <div class="income-card-body">
+            <form id="manualIncomeForm">
+              <div class="income-form-grid">
+                <div class="income-field">
+                  <label>Persona</label>
+                  <div class="catalog-field-row">
+                    <select id="manualPerson"></select>
+                    <button class="catalog-add-btn" id="addIncomePersonBtn" type="button" title="Dar de alta persona">＋</button>
+                  </div>
+                </div>
+                <div class="income-field">
+                  <label>Fecha del ingreso</label>
+                  <input id="manualDate" type="date" required>
+                </div>
+                <div class="income-field">
+                  <label>Fuente</label>
+                  <div class="catalog-field-row">
+                    <input id="manualSource" list="incomeSourceSuggestions" placeholder="Ej. TELMEX, renta, negocio..." required>
+                    <button class="catalog-add-btn" id="addIncomeSourceBtn" type="button" title="Dar de alta fuente">＋</button>
+                  </div>
+                  <datalist id="incomeSourceSuggestions"></datalist>
+                </div>
+                <div class="income-field">
+                  <label>Categoría</label>
+                  <div class="catalog-field-row">
+                    <select id="manualType"></select>
+                    <button class="catalog-add-btn" id="addIncomeCategoryBtn" type="button" title="Dar de alta categoría">＋</button>
+                  </div>
+                </div>
+                <div class="income-field">
+                  <label>Concepto</label>
+                  <input id="manualConcept" placeholder="Ej. Renta septiembre" required>
+                </div>
+                <div class="income-field">
+                  <label>Monto recibido</label>
+                  <input id="manualAmount" type="number" min="0" step="0.01" placeholder="0.00" required>
+                </div>
+                <div class="income-field full">
+                  <label>Nota</label>
+                  <textarea id="manualNote" placeholder="Opcional"></textarea>
+                </div>
+              </div>
+              <div class="income-actions">
+                <button class="income-btn" id="manualCancelEdit" type="button" style="display:none">Cancelar edición</button>
+                <button class="income-btn primary" type="submit" id="manualSaveBtn">Guardar ingreso</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="income-pane" id="incomePanePayslip">
+        <div class="income-card">
+          <div class="income-card-head">
+            <h3>Importar volante</h3>
+            <span>PDF · revisión antes de guardar</span>
+          </div>
+          <div class="income-card-body">
+            <div class="income-reader-grid">
+              <div>
+                <div class="income-form-grid" style="margin-bottom:10px">
+                  <div class="income-field">
+                    <label>Persona (respaldo / genérico)</label>
+                    <select id="payslipPerson"></select>
+                  </div>
+                  <div class="income-field">
+                    <label>Perfil de lectura</label>
+                    <select id="payslipProfile">
+                      <option value="auto">Detectar automáticamente</option>
+                      <option value="telmex">TELMEX · Iván</option>
+                      <option value="sep">SEP · Diana / Yorsky</option>
+                      <option value="generic">Nómina genérica</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="income-drop" id="incomeDropzone">
+                  <div>
+                    <strong>Arrastra aquí uno o varios volantes</strong>
+                    <p>o selecciona múltiples PDF desde tu equipo.</p>
+                    <button class="income-btn" id="incomeSelectPdf" type="button">Seleccionar PDF</button>
+                    <input id="incomePdfInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+                  </div>
+                </div>
+                <div class="income-file-meta" id="incomeFileMeta">
+                  <div style="width:100%">
+                    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+                      <strong id="incomeFileCount">0 archivos</strong>
+                      <button class="income-btn" id="incomeRemovePdf" type="button">Vaciar cola</button>
+                    </div>
+                    <div id="incomeSelectedFiles" class="income-selected-files"></div>
+                  </div>
+                </div>
+                <div class="income-actions" style="justify-content:flex-start">
+                  <button class="income-btn primary" id="incomeProcessPdf" type="button" disabled>Procesar todos</button>
+                  <button class="income-btn good" id="saveAllPayslipsBtn" type="button" disabled>Guardar todos los volantes</button>
+                </div>
+                <div class="income-toolbar-note">
+                  Detección automática por PDF: TELMEX se asigna a Iván y SEP a Diana / Yorsky. Cada archivo se identifica por separado, así que puedes mezclar volantes de ambos en la misma cola. La lectura ocurre localmente con PDF.js + OCR + reglas.
+                </div>
+              </div>
+
+              <div>
+                <div id="incomeBatchPanel" style="display:none;margin-bottom:12px">
+                  <div class="income-table-wrap">
+                    <table class="income-table" style="min-width:720px">
+                      <thead><tr><th>Archivo</th><th>Persona</th><th>Perfil</th><th>Fecha</th><th>Periodo</th><th>Neto</th><th>Estado</th><th></th></tr></thead>
+                      <tbody id="incomeBatchRows"></tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="income-preview-empty" id="incomePreviewEmpty">Procesa un volante para revisar sus datos antes de guardarlo.</div>
+                <div class="income-preview" id="incomePreview">
+                  <div class="income-form-grid" style="margin-bottom:10px">
+                    <div class="income-field"><label>Fecha de pago</label><input id="previewPaymentDate" type="date"></div>
+                    <div class="income-field"><label>Periodo</label><input id="previewPeriod" type="text"></div>
+                    <div class="income-field"><label>Tipo de volante</label>
+                      <select id="previewDocumentType">
+                        <option value="Nómina semanal">Nómina semanal</option>
+                        <option value="Nómina ordinaria">Nómina ordinaria</option>
+                        <option value="Nómina quincenal">Nómina quincenal</option>
+                        <option value="Nómina extraordinaria">Nómina extraordinaria</option>
+                        <option value="Ahorro">Ahorro</option>
+                        <option value="Otro">Otro</option>
+                      </select>
+                    </div>
+                    <div class="income-field"><label>Extraordinario</label>
+                      <select id="previewExtraordinary"><option value="false">No</option><option value="true">Sí</option></select>
+                    </div>
+                  </div>
+                  <div id="previewDetectedMeta" class="income-toolbar-note" style="margin:0 0 10px;font-weight:800;color:#475467"></div>
+                  <div class="income-kpis">
+                    <div class="income-kpi"><span>Percepciones</span><strong id="previewPerceptions">$0.00</strong></div>
+                    <div class="income-kpi"><span>Deducciones</span><strong id="previewDeductions">$0.00</strong></div>
+                    <div class="income-kpi"><span>Impuestos</span><strong id="previewTaxes">$0.00</strong></div>
+                    <div class="income-kpi net"><span>Neto</span><strong id="previewNet">$0.00</strong></div>
+                  </div>
+                  <div class="income-validation" id="previewValidation">—</div>
+                  <div class="income-ocr-source" id="previewOcrSource"></div>
+                  <div class="income-ai-panel" id="incomeAiPanel" style="display:none">
+                    <div class="income-ai-row">
+                      <button class="income-ai-btn" id="incomeAiAnalyzeBtn" type="button">✦ Analizar con IA</button>
+                    </div>
+                    <div class="income-ai-note" id="incomeAiNote"></div>
+                  </div>
+                  <details class="income-ocr-details" id="previewOcrDetails" style="display:none">
+                    <summary>Ver texto detectado</summary>
+                    <pre class="income-ocr-text" id="previewOcrText"></pre>
+                  </details>
+                  <div class="income-table-wrap" style="max-height:300px">
+                    <table class="income-table">
+                      <thead><tr><th>Clave</th><th>Concepto</th><th>Tipo</th><th>Horas</th><th>Importe</th></tr></thead>
+                      <tbody id="previewConceptRows"></tbody>
+                    </table>
+                  </div>
+                  <div class="income-actions">
+                    <button class="income-btn good" id="savePayslipBtn" type="button">Guardar este volante</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="income-pane" id="incomePaneHistory">
+        <div class="income-card">
+          <div class="income-card-head">
+            <h3>Historial de ingresos</h3>
+            <span id="incomeHistoryCount">0 registros</span>
+          </div>
+          <div class="income-card-body">
+            <div class="income-filters">
+              <input id="incomeSearch" type="search" placeholder="Buscar fuente, concepto, periodo...">
+              <select id="incomeFilterPerson"><option value="">Todas las personas</option></select>
+              <select id="incomeFilterKind"><option value="">Todos los tipos</option><option value="manual">Manual</option><option value="nomina">Nómina PDF</option></select>
+              <input id="incomeFilterMonth" type="month" title="Mes específico">
+              <div class="income-date-range">
+                <input id="incomeFilterFrom" type="date" title="Desde">
+                <input id="incomeFilterTo" type="date" title="Hasta">
+              </div>
+            </div>
+            <div class="income-summary">
+              <span id="incomeHistoryShowing">0 registros</span>
+              <span>Total neto mostrado: <strong id="incomeHistoryTotal">$0.00</strong></span>
+            </div>
+            <div class="income-table-wrap">
+              <table class="income-table">
+                <thead><tr>
+                  <th class="sortable active-sort" data-history-sort="date">Fecha <span class="sort-arrow">▼</span></th>
+                  <th class="sortable" data-history-sort="person">Persona <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="source">Fuente <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="concept">Concepto / periodo <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="category">Categoría <span class="sort-arrow">↕</span></th>
+                  <th class="sortable" data-history-sort="net">Neto <span class="sort-arrow">↕</span></th>
+                  <th></th>
+                </tr></thead>
+                <tbody id="incomeHistoryRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="income-modal-backdrop" id="incomeDetailModal">
+      <div class="income-modal">
+        <div class="income-modal-head"><h3>Detalle del ingreso</h3><button class="income-close" id="incomeDetailClose">×</button></div>
+        <div class="income-modal-body" id="incomeDetailBody"></div>
+      </div>
+    </div>
+    <div class="income-toast" id="incomeToast"></div>
+  `;
+}
+
+function switchIncomeView(view){
+  incomeView=view;
+  document.querySelectorAll('#ingresos [data-income-view]').forEach(b=>b.classList.toggle('active',b.dataset.incomeView===view));
+  document.querySelectorAll('#ingresos .income-pane').forEach(p=>p.classList.remove('active'));
+  const map={manual:'incomePaneManual',payslip:'incomePanePayslip',history:'incomePaneHistory'};
+  document.getElementById(map[view])?.classList.add('active');
+  if(view==='history')renderIncomeHistory();
+}
+
+function resetManualForm(){
+  editingIncomeId=null;
+  const form=document.getElementById('manualIncomeForm');
+  form?.reset();
+  refreshLocalCatalogUI();
+  const people=incomePeople();
+  if(people.length)document.getElementById('manualPerson').value=people[0];
+  document.getElementById('manualDate').value=new Date().toISOString().slice(0,10);
+  fillCategoryOptions('Nómina');
+  document.getElementById('manualIncomeTitle').textContent='Registrar ingreso';
+  document.getElementById('manualSaveBtn').textContent='Guardar ingreso';
+  document.getElementById('manualCancelEdit').style.display='none';
+}
+
+async function saveManualIncome(e){
+  e.preventDefault();
+  const item={
+    entryType:'manual',
+    person:document.getElementById('manualPerson').value,
+    paymentDate:document.getElementById('manualDate').value,
+    source:document.getElementById('manualSource').value.trim(),
+    incomeType:document.getElementById('manualType').value,
+    concept:document.getElementById('manualConcept').value.trim(),
+    amount:Number(document.getElementById('manualAmount').value||0),
+    note:document.getElementById('manualNote').value.trim(),
+    updatedAt:new Date().toISOString()
+  };
+  if(!item.person||!item.paymentDate||!item.source||!item.concept||item.amount<=0){
+    toast('Completa persona, fecha, fuente, concepto y monto.','warn');return;
+  }
+
+  if(normalizeSearchText(item.incomeType)==='nomina')item.incomeType='Nómina';
+  writeLocalList(INCOME_SOURCES_KEY,[...incomeSources(),item.source]);
+  writeLocalList(INCOME_CATEGORIES_KEY,[...incomeCategories(),item.incomeType]);
+  if(editingIncomeId){
+    const old=await incomeGet(editingIncomeId);
+    await incomePut({...old,...item,id:editingIncomeId});
+    toast('Ingreso actualizado.');
+  }else{
+    item.createdAt=new Date().toISOString();
+    await incomeAdd(item);
+    toast('Ingreso guardado.');
+  }
+  resetManualForm();
+  await renderIncomeHistory();
+}
+
+
+function refreshSelectedFiles(){
+  const meta=document.getElementById('incomeFileMeta');
+  const list=document.getElementById('incomeSelectedFiles');
+  const count=document.getElementById('incomeFileCount');
+  const process=document.getElementById('incomeProcessPdf');
+  count.textContent=`${selectedIncomeFiles.length} archivo${selectedIncomeFiles.length===1?'':'s'}`;
+  list.innerHTML=selectedIncomeFiles.map((file,index)=>`
+    <div class="income-selected-file">
+      <span title="${esc(file.name)}">${esc(file.name)} · ${(file.size/1024).toFixed(1)} KB</span>
+      <button type="button" data-remove-selected="${index}" title="Quitar">×</button>
+    </div>`).join('');
+  list.querySelectorAll('[data-remove-selected]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      selectedIncomeFiles.splice(Number(btn.dataset.removeSelected),1);
+      refreshSelectedFiles();
+    });
+  });
+  meta.classList.toggle('show',selectedIncomeFiles.length>0);
+  process.disabled=selectedIncomeFiles.length===0;
+}
+
+function addPdfFiles(files){
+  const incoming=[...(files||[])].filter(file=>
+    file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')
+  );
+  if(!incoming.length){toast('Selecciona archivos PDF.','warn');return;}
+  for(const file of incoming){
+    if(!selectedIncomeFiles.some(f=>f.name===file.name&&f.size===file.size)){
+      selectedIncomeFiles.push(file);
+    }
+  }
+  refreshSelectedFiles();
+}
+
+function clearPdfFile(){
+  selectedIncomeFiles=[];
+  payslipQueue=[];
+  currentPayslipQueueIndex=null;
+  document.getElementById('incomePdfInput').value='';
+  document.getElementById('incomeBatchPanel').style.display='none';
+  document.getElementById('incomeBatchRows').innerHTML='';
+  document.getElementById('saveAllPayslipsBtn').disabled=true;
+  document.getElementById('incomePreview').classList.remove('show');
+  document.getElementById('incomePreviewEmpty').style.display='';
+  refreshSelectedFiles();
+}
+
+function validationState(d){
+  const p=Number(d.perceptions||0);
+  const de=Number(d.deductions||0);
+  const n=Number(d.net||0);
+  const taxes=Number(d.taxes||0);
+  const calc=p-de;
+
+  if(!d.paymentDate)return 'review';
+
+  const documentType=String(d.documentType||'').toLowerCase();
+  const isExtraordinary=
+    Boolean(d.extraordinary) ||
+    documentType.includes('extraordinaria') ||
+    documentType.includes('aguinaldo') ||
+    documentType.includes('educacional') ||
+    documentType==='ahorro';
+
+  if(!isExtraordinary && !String(d.period||'').trim())return 'review';
+
+  if(!(p>0))return 'review';
+  if(!(de>=0))return 'review';
+  if(!(n>=0))return 'review';
+
+  if(taxes<0 || taxes>de+0.05)return 'review';
+
+  if(Math.abs(calc-n)>0.05)return 'review';
+
+  return 'valid';
+}
+
+function renderBatchQueue(){
+  const panel=document.getElementById('incomeBatchPanel');
+  const tbody=document.getElementById('incomeBatchRows');
+  if(!payslipQueue.length){
+    panel.style.display='none';
+    tbody.innerHTML='';
+    document.getElementById('saveAllPayslipsBtn').disabled=true;
+    return;
+  }
+  panel.style.display='';
+  const labels={pending:'Pendiente',processing:'Procesando',valid:'Validado',review:'Revisar',error:'Error'};
+  tbody.innerHTML=payslipQueue.map((item,index)=>{
+    const d=item.data||{};
+    return `<tr>
+      <td><strong>${esc(item.file.name)}</strong></td>
+      <td>${item.data?esc(personDisplayName(d.person)):'—'}</td>
+      <td>${item.data?esc((d.parserProfile||'').replace('telmex-local-ocr','TELMEX').replace('sep-local','SEP').replace('generic-local-ocr','Genérico')):'—'}</td>
+      <td>${d.paymentDate?localDate(d.paymentDate):'—'}</td>
+      <td>${esc(d.period||'—')}</td>
+      <td>${item.data?money(d.net):'—'}</td>
+      <td>
+        <span class="income-batch-status ${item.status}">${
+          item.status==='processing' && Number.isFinite(item.progress)
+            ? `OCR ${Math.round(item.progress)}%`
+            : (labels[item.status]||item.status)
+        }</span>
+      </td>
+      <td><button class="income-icon-btn" type="button" data-open-batch="${index}" title="Revisar">👁</button></td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('[data-open-batch]').forEach(btn=>{
+    btn.addEventListener('click',()=>openBatchPreview(Number(btn.dataset.openBatch)));
+  });
+  document.getElementById('saveAllPayslipsBtn').disabled=!payslipQueue.some(x=>
+    x.data && ['valid','review'].includes(x.status)
+  );
+}
+
+function openBatchPreview(index){
+  const item=payslipQueue[index];
+  if(!item?.data)return;
+  currentPayslipQueueIndex=index;
+  renderPayslipPreview(item.data);
+}
+
+
+function loadExternalScript(src,globalName){
+  return new Promise((resolve,reject)=>{
+    if(globalName && window[globalName]){resolve(window[globalName]);return;}
+    const existing=[...document.scripts].find(s=>s.src===src);
+    if(existing){
+      const wait=()=>{
+        if(!globalName || window[globalName])resolve(globalName?window[globalName]:true);
+        else setTimeout(wait,60);
+      };
+      wait();
+      return;
+    }
+    const script=document.createElement('script');
+    script.src=src;
+    script.async=true;
+    script.crossOrigin='anonymous';
+    script.onload=()=>resolve(globalName?window[globalName]:true);
+    script.onerror=()=>reject(new Error(`No se pudo cargar ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function ensurePdfJs(){
+  if(window.pdfjsLib)return window.pdfjsLib;
+  if(!pdfJsReadyPromise){
+    pdfJsReadyPromise=loadExternalScript(PDFJS_CDN,'pdfjsLib').then(pdfjs=>{
+      pdfjs.GlobalWorkerOptions.workerSrc=PDFJS_WORKER_CDN;
+      return pdfjs;
+    });
+  }
+  return pdfJsReadyPromise;
+}
+
+async function ensureTesseract(){
+  if(window.Tesseract)return window.Tesseract;
+  if(!tesseractReadyPromise){
+    tesseractReadyPromise=loadExternalScript(TESSERACT_CDN,'Tesseract');
+  }
+  return tesseractReadyPromise;
+}
+
+function normalizeOcrText(text=''){
+  return String(text)
+    .replace(/\r/g,'')
+    .replace(/[ \t]+/g,' ')
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
+    .trim();
+}
+
+function parseTelmexMoney(raw){
+  if(raw===null||raw===undefined)return null;
+  let s=String(raw).trim()
+    .replace(/\s/g,'')
+    .replace(/\$/g,'')
+    .replace(/[Oo](?=\d)/g,'0')
+    .replace(/(?<=\d)[Oo]/g,'0');
+  if(!s)return null;
+  let negative=false;
+  if(/^\-/.test(s)){negative=true;s=s.slice(1);}
+  s=s.replace(/,/g,'');
+  const n=Number(s);
+  return Number.isFinite(n)?(negative?-n:n):null;
+}
+
+function moneyTokens(line=''){
+  const matches=String(line).match(/-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})|-?\$?\d+\.\d{2}/g)||[];
+  return matches.map(parseTelmexMoney).filter(Number.isFinite);
+}
+
+function toIsoTelmexDate(raw){
+  const m=String(raw||'').match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2})/);
+  if(!m)return '';
+  const d=String(Number(m[1])).padStart(2,'0');
+  const mo=String(Number(m[2])).padStart(2,'0');
+  return `${m[3]}-${mo}-${d}`;
+}
+
+
+function toIsoAnyDate(raw=''){
+  const m=String(raw||'').match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](20\d{2})/);
+  if(!m)return '';
+  return `${m[3]}-${String(Number(m[2])).padStart(2,'0')}-${String(Number(m[1])).padStart(2,'0')}`;
+}
+
+function detectPayslipProfileFromText(text='',fileName=''){
+  const t=normalizeSearchText(`${fileName} ${text}`);
+  const sepSignals=[
+    'centro de trabajo','clave de cobro','carrera magisterial','entidad federativa',
+    'fovissste','asignacion docente','sep.gob.mx','secretaria de educacion'
+  ].filter(x=>t.includes(x)).length;
+  const telmexSignals=[
+    'telmex','salario diario','dias periodo','pago neto','sindicalizado',
+    'ayuda renta','ayuda pasajes','tiempo ext doble'
+  ].filter(x=>t.includes(x)).length;
+
+  if(sepSignals>=2)return 'sep';
+  if(telmexSignals>=2)return 'telmex';
+  if(t.includes('cardenas zechinelli diana laura'))return 'sep';
+  if(t.includes('ivan yair islas') && (t.includes('salario diario')||t.includes('telmex')))return 'telmex';
+  return 'generic';
+}
+
+async function detectPayslipProfile(file){
+  try{
+    const pdfjs=await ensurePdfJs();
+    const data=await file.arrayBuffer();
+    const pdf=await pdfjs.getDocument({data}).promise;
+    const page=await pdf.getPage(1);
+    const content=await page.getTextContent();
+    const nativeText=normalizeOcrText(content.items.map(x=>x.str).join(' '));
+    const profile=detectPayslipProfileFromText(nativeText,file?.name||'');
+    if(profile!=='generic')return {profile,text:nativeText};
+  }catch{
+    // A scanned PDF may have no usable text layer. Try OCR before routing it
+    // to the generic reader, which deliberately leaves the amounts empty.
+  }
+  try{
+    const {canvas}=await extractPdfTextAndCanvas(file);
+    const worker=await getTelmexOcrWorker();
+    await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''});
+    const result=await worker.recognize(canvas);
+    const text=normalizeOcrText(result?.data?.text||'');
+    return {profile:detectPayslipProfileFromText(text,file?.name||''),text};
+  }catch{
+    return {profile:'generic',text:''};
+  }
+}
+
+const SEP_CONCEPTS=[
+  {code:'CC',description:'Compensación provisional compactable',kind:'percepcion'},
+  {code:'E9',description:'Asignación docente genérica',kind:'percepcion'},
+  {code:'MB',description:'Ajuste para la medida del bienestar',kind:'percepcion'},
+  {code:'Q1',description:'Acreditación por años de servicio en la docencia',kind:'percepcion'},
+  {code:'R9',description:'Equiparación de la asignación docente genérica',kind:'percepcion'},
+  {code:'SC',description:'Asignación por servicios cocurriculares',kind:'percepcion'},
+  {code:'07',description:'Sueldo base',kind:'percepcion'},
+  {code:'38',description:'Despensa',kind:'percepcion'},
+  {code:'39',description:'Material didáctico',kind:'percepcion'},
+  {code:'44',description:'Previsión social múltiple',kind:'percepcion'},
+  {code:'72',description:'Ayuda familiar',kind:'percepcion'},
+  {code:'GF',description:'FIGLOSNTE 23',kind:'deduccion'},
+  {code:'03',description:'Préstamos a corto plazo',kind:'deduccion'},
+  {code:'FH',description:'Fondo de ahorro del retiro (SECC 23)',kind:'deduccion'},
+  {code:'F3',description:'FARC SNTE Sección 23',kind:'deduccion'},
+  {code:'58',description:'Cuotas sindicales S.N.T.E.',kind:'deduccion'},
+  {code:'64D',description:'Rentas FOVISSSTE Fondo de Viviendas',kind:'deduccion'},
+  {code:'02',description:'Seguro de salud invalidez y vida servicios',kind:'deduccion'},
+  {code:'77',description:'Seguro colectivo de retiro (SECORE)',kind:'deduccion'},
+  {code:'04',description:'Seguro de retiro, cesantía en edad avanzada',kind:'deduccion'},
+  {code:'09',description:'Seguro de daños, préstamo FOVISSSTE',kind:'deduccion'},
+  {code:'01',description:'Impuesto sobre la renta',kind:'impuesto'},
+  {code:'23',description:'Seguro colectivo SNTE',kind:'deduccion'}
+];
+
+function escapeRegex(s=''){
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+}
+
+function parseSepConcepts(text=''){
+  const raw=normalizeOcrText(text);
+  const flat=raw.replace(/\n/g,' ');
+  const out=[];
+  for(const def of SEP_CONCEPTS){
+    const aliases=[def.description];
+    if(def.code==='64D')aliases.push('RENTAS FOVISSSTE');
+    if(def.code==='01')aliases.push('IMPUESTO SOBRE LA RENTA');
+    if(def.code==='03')aliases.push('PRESTAMOS A CORTO PLAZO');
+    if(def.code==='GF')aliases.push('FIGLOSNTE 23');
+    let found=null;
+    for(const alias of aliases){
+      const re=new RegExp(`(?:^|\\s)${escapeRegex(def.code)}\\s+${escapeRegex(alias).slice(0,Math.min(28,escapeRegex(alias).length))}[\\s\\S]{0,120}?([0-9][0-9,]*\\.\\d{2})`,'i');
+      const m=flat.match(re);
+      if(m){found=parseTelmexMoney(m[1]);break;}
+    }
+    if(Number.isFinite(found)){
+      out.push({...def,hours:null,days:null,amount:Math.abs(found)});
+    }
+  }
+  return out;
+}
+
+function findSepHeaderData(text=''){
+  const flat=normalizeOcrText(text).replace(/\n/g,' ');
+  const top=flat.slice(0,Math.min(flat.length,5000));
+  const dates=(top.match(/\b\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2}\b/g)||[]).slice(0,6);
+  const paymentDate=dates[0]?toIsoAnyDate(dates[0]):'';
+  const periodStart=dates[1]?toIsoAnyDate(dates[1]):'';
+  const periodEnd=dates[2]?toIsoAnyDate(dates[2]):'';
+  const period=periodStart&&periodEnd?`${periodStart} a ${periodEnd}`:(periodStart||'');
+  const center=(flat.match(/CENTRO\s+DE\s+TRABAJO[\s\S]{0,100}?\b([0-9]{2}[A-Z]{3}\d{4}[A-Z0-9])\b/i)||[])[1]||'';
+  const type=/\bORDINARIA\b/i.test(top)?'Nómina ordinaria':'Nómina';
+  return {paymentDate,period,center,documentType:type};
+}
+
+
+async function readSepHeaderTotalsByPosition(file){
+  const pdfjs=await ensurePdfJs();
+  const bytes=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data:bytes}).promise;
+  const page=await pdf.getPage(1);
+  const content=await page.getTextContent();
+
+  const items=(content.items||[]).map(item=>({
+    text:String(item.str||'').trim(),
+    norm:normalizeSearchText(item.str||''),
+    x:Number(item.transform?.[4]||0),
+    y:Number(item.transform?.[5]||0),
+    width:Number(item.width||0)
+  })).filter(item=>item.text);
+
+  const labels={
+    perceptions:items.find(i=>i.norm==='percepciones'),
+    deductions:items.find(i=>i.norm==='descuentos'),
+    net:items.find(i=>i.norm==='liquido') || items.find(i=>i.norm==='liquido neto')
+  };
+
+  const moneyItems=items.map(i=>{
+    const value=parseTelmexMoney(i.text);
+    const looksMoney=/^-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})$|^-?\$?\d+\.\d{2}$/.test(i.text.replace(/\s/g,''));
+    return {...i,value,looksMoney};
+  }).filter(i=>i.looksMoney&&Number.isFinite(i.value));
+
+  function valueUnderLabel(label){
+    if(!label)return null;
+    const center=label.x+(label.width||0)/2;
+    const candidates=moneyItems
+      .filter(i=>Math.abs(i.y-label.y)<=28 && Math.abs((i.x+(i.width||0)/2)-center)<=85)
+      .map(i=>({
+        ...i,
+        score:Math.abs(i.y-label.y)*4 + Math.abs((i.x+(i.width||0)/2)-center)
+      }))
+      .sort((a,b)=>a.score-b.score);
+    return candidates.length?Math.abs(Number(candidates[0].value)):null;
+  }
+
+  const perceptions=valueUnderLabel(labels.perceptions);
+  const deductions=valueUnderLabel(labels.deductions);
+  const net=valueUnderLabel(labels.net);
+  const reliable=[perceptions,deductions,net].every(Number.isFinite) &&
+    Math.abs((perceptions-deductions)-net)<0.05;
+
+  return {
+    perceptions:Number.isFinite(perceptions)?perceptions:0,
+    deductions:Number.isFinite(deductions)?deductions:0,
+    net:Number.isFinite(net)?net:0,
+    reliable,
+    source:'Encabezado SEP por posición de columnas · Percepciones / Descuentos / Líquido'
+  };
+}
+
+function findSepTotals(text='',concepts=[]){
+  const flat=normalizeOcrText(text).replace(/\n/g,' ');
+
+  // En los CFDI de SEP la capa de texto no conserva necesariamente el orden visual
+  // de las columnas. Por eso NO podemos decidir cuál valor es Deducciones y cuál
+  // es Líquido sólo con la ecuación P - D = N: intercambiar D y N también puede
+  // cumplirla. Primero reconstruimos los totales desde los conceptos impresos.
+  const conceptPerceptions=concepts
+    .filter(c=>c.kind==='percepcion')
+    .reduce((s,c)=>s+Number(c.amount||0),0);
+  const conceptDeductions=concepts
+    .filter(c=>['deduccion','impuesto'].includes(c.kind))
+    .reduce((s,c)=>s+Number(c.amount||0),0);
+  const conceptNet=conceptPerceptions-conceptDeductions;
+
+  const tokens=moneyTokens(flat.slice(0,3500)).filter(v=>v>0&&v<1000000);
+  const hasAmount=(value,tolerance=.05)=>tokens.some(v=>Math.abs(v-value)<=tolerance);
+
+  // Si el desglose completo cuadra y los tres totales aparecen impresos en el
+  // encabezado, usamos esas sumas como fuente inequívoca.
+  if(conceptPerceptions>0 && conceptDeductions>=0 && conceptNet>=0 &&
+     hasAmount(conceptPerceptions) && hasAmount(conceptDeductions) && hasAmount(conceptNet)){
+    return {
+      perceptions:Number(conceptPerceptions.toFixed(2)),
+      deductions:Number(conceptDeductions.toFixed(2)),
+      net:Number(conceptNet.toFixed(2)),
+      reliable:true,
+      source:'Conceptos SEP + totales impresos'
+    };
+  }
+
+  // Segundo intento: buscar explícitamente el bloque superior. Aun si la capa de
+  // texto reordena las columnas, elegimos la combinación que más se aproxima a las
+  // sumas de conceptos, evitando la ambigüedad Deducciones/Líquido.
+  const explicit=flat.match(/PERCEPCIONES[\s\S]{0,260}?DESCUENTOS[\s\S]{0,260}?([0-9][0-9,]*\.\d{2})[\s\S]{0,150}?([0-9][0-9,]*\.\d{2})[\s\S]{0,150}?([0-9][0-9,]*\.\d{2})/i);
+  if(explicit){
+    const vals=explicit.slice(1,4).map(parseTelmexMoney).filter(Number.isFinite);
+    let best=null;
+    for(const P of vals){
+      for(const D of vals){
+        if(D===P)continue;
+        for(const N of vals){
+          if(N===P||N===D)continue;
+          if(Math.abs((P-D)-N)>=0.05)continue;
+          const score=(conceptPerceptions>0?Math.abs(P-conceptPerceptions):0)+
+            (conceptDeductions>0?Math.abs(D-conceptDeductions):0)+
+            (conceptNet>=0?Math.abs(N-conceptNet):0);
+          if(!best||score<best.score)best={perceptions:P,deductions:D,net:N,reliable:true,score};
+        }
+      }
+    }
+    if(best){delete best.score;return best;}
+  }
+
+  // Último intento sobre los importes del encabezado, también puntuado contra el
+  // desglose para no intercambiar Deducciones y Líquido.
+  let best=null;
+  for(let i=0;i<tokens.length;i++){
+    for(let j=0;j<tokens.length;j++){
+      if(i===j)continue;
+      for(let k=0;k<tokens.length;k++){
+        if(k===i||k===j)continue;
+        const P=tokens[i],D=tokens[j],N=tokens[k];
+        if(!(P>D) || Math.abs((P-D)-N)>=0.05 || P<=1000)continue;
+        const score=(conceptPerceptions>0?Math.abs(P-conceptPerceptions):0)+
+          (conceptDeductions>0?Math.abs(D-conceptDeductions):0)+
+          (conceptNet>=0?Math.abs(N-conceptNet):0);
+        if(!best||score<best.score)best={perceptions:P,deductions:D,net:N,reliable:true,score};
+      }
+    }
+  }
+  if(best){delete best.score;return best;}
+
+  return {
+    perceptions:Number(conceptPerceptions.toFixed(2)),
+    deductions:Number(conceptDeductions.toFixed(2)),
+    net:Number(Math.max(0,conceptNet).toFixed(2)),
+    reliable:false,
+    source:'Reconstruido desde conceptos SEP'
+  };
+}
+
+function parseSepPayslipText(text,file){
+  const clean=normalizeOcrText(text);
+  const concepts=parseSepConcepts(clean);
+  const header=findSepHeaderData(clean);
+  const totals=findSepTotals(clean,concepts);
+  const taxConcept=concepts.find(c=>c.code==='01'||c.kind==='impuesto');
+  const nameDetected=/CARDENAS\s+ZECHINELLI\s+DIANA\s+LAURA/i.test(clean);
+
+  return {
+    person:'Yorsky',
+    source:'SEP',
+    entryType:'nomina',
+    documentType:header.documentType||'Nómina ordinaria',
+    paymentDate:header.paymentDate,
+    period:header.period,
+    periodDays:0,
+    dailySalary:0,
+    perceptions:Number(totals.perceptions||0),
+    deductions:Number(totals.deductions||0),
+    taxes:Math.abs(Number(taxConcept?.amount||0)),
+    net:Number(totals.net||0),
+    extraordinary:false,
+    parserProfile:'sep-local',
+    concepts,
+    fileName:file?.name||'',
+    totalsReliable:Boolean(totals.reliable),
+    totalsSource:totals.source||(totals.reliable?'Totales impresos SEP':'Reconstruido desde conceptos · revisar'),
+    centerWork:header.center||'',
+    employeeName:nameDetected?'Cárdenas Zechinelli Diana Laura':'',
+    ocrText:clean,
+    ocrSource:'Texto interno SEP · primera página',
+    createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+}
+
+async function readSepPdfLocally(file,onProgress=()=>{}){
+  onProgress(8);
+  let extracted;
+  try{
+    extracted=await extractPdfTextAndCanvas(file);
+  }catch(err){
+    throw new Error(`No se pudo abrir el PDF SEP: ${err?.message||err}`);
+  }
+  let text=extracted.nativeText||'';
+  if(text.length<200 || !/percepc|deducc|liquido|centro de trabajo/i.test(text)){
+    onProgress(25);
+    const worker=await getTelmexOcrWorker(p=>onProgress(Math.min(90,25+p*0.65)));
+    try{await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''});}catch{}
+    const result=await worker.recognize(extracted.canvas);
+    text=result?.data?.text||'';
+  }
+
+  const parsed=parseSepPayslipText(text,file);
+
+  // IMPORTANTE: en los CFDI SEP la capa de texto puede salir en un orden distinto
+  // al orden visual. Por eso "Descuentos" y "Líquido" NO se asignan por secuencia
+  // ni por la ecuación P-D=N. Se leen por la posición real de sus columnas.
+  try{
+    onProgress(92);
+    const headerTotals=await readSepHeaderTotalsByPosition(file);
+    if(headerTotals.reliable){
+      parsed.perceptions=headerTotals.perceptions;
+      parsed.deductions=headerTotals.deductions;
+      parsed.net=headerTotals.net;
+      parsed.totalsReliable=true;
+      parsed.totalsSource=headerTotals.source;
+      parsed.ocrSource=[parsed.ocrSource,'Totales SEP leídos por columnas'].filter(Boolean).join(' · ');
+    }
+  }catch(err){
+    console.warn('No se pudieron leer los totales SEP por posición:',err);
+  }
+
+  if(!parsed.totalsReliable && parsed.perceptions>0 && parsed.deductions>=0){
+    const calc=parsed.perceptions-parsed.deductions;
+    if(Math.abs(calc-parsed.net)<0.05)parsed.totalsReliable=true;
+  }
+  onProgress(100);
+  return parsed;
+}
+
+
+function findTelmexDate(text){
+  const patterns=[
+    /Fecha\s+de\s+pago[\s\S]{0,100}?(\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2})/i,
+    /\b(\d{1,2}[.\/-]\d{1,2}[.\/-]20\d{2})\b/
+  ];
+  for(const p of patterns){
+    const m=text.match(p);
+    if(m)return toIsoTelmexDate(m[1]);
+  }
+  return '';
+}
+
+function findTelmexPeriod(text,fileName=''){
+  if(/\b00\s*\/\s*0000\b/.test(text))return '';
+  const m=text.match(/(?:Sindicalizado|Periodo|Per[ií]odo)[\s\S]{0,100}?\b(\d{1,2})\s*\/\s*(20\d{2})\b/i)
+    || text.match(/\b(\d{1,2})\s*\/\s*(20\d{2})\b/);
+  if(m)return `${String(Number(m[1])).padStart(2,'0')}/${m[2]}`;
+  const fm=String(fileName).match(/\bP(\d{1,2})\b/i);
+  if(fm){
+    const year=(text.match(/\b20\d{2}\b/)||[])[0]||new Date().getFullYear();
+    return `${String(Number(fm[1])).padStart(2,'0')}/${year}`;
+  }
+  return '';
+}
+
+function findTotalsFromText(text){
+  const lines=normalizeOcrText(text).split('\n').map(x=>x.trim()).filter(Boolean);
+
+  // Best case: TELMEX total row contains Percepciones + Deducciones
+  // and usually the same or following line contains Neto.
+  for(let i=0;i<lines.length;i++){
+    if(!/\btotal\b/i.test(lines[i]))continue;
+
+    const vals=moneyTokens(lines[i]).filter(v=>Math.abs(v)>=1);
+    let net=null;
+
+    const neighborhood=lines.slice(i,Math.min(lines.length,i+4)).join(' ');
+    const nm=neighborhood.match(/(?:Pago\s+Neto|Neto)[:\s$]*([0-9][0-9,]*\.\d{2})/i);
+    if(nm)net=parseTelmexMoney(nm[1]);
+
+    if(vals.length>=3){
+      // Pick a triple that satisfies percepciones - deducciones = neto.
+      for(let a=0;a<vals.length-2;a++){
+        for(let b=a+1;b<vals.length-1;b++){
+          for(let c=b+1;c<vals.length;c++){
+            if(Math.abs((vals[a]-vals[b])-vals[c])<0.05){
+              return {perceptions:vals[a],deductions:vals[b],net:vals[c]};
+            }
+          }
+        }
+      }
+    }
+
+    if(vals.length>=2 && Number.isFinite(net)){
+      const p=vals[0],d=vals[1];
+      if(Math.abs((p-d)-net)<1){
+        return {perceptions:p,deductions:d,net};
+      }
+    }
+  }
+
+  // Search a larger neighborhood around "Pago Neto" / "Neto".
+  const joined=lines.join(' ');
+  const netMatch=joined.match(/(?:Pago\s+Neto|Neto)[:\s$]*([0-9][0-9,]*\.\d{2})/i);
+  const net=netMatch?parseTelmexMoney(netMatch[1]):0;
+
+  // Bottom summary commonly reads:
+  // Percepciones 11,157.79 Deducciones 8,380.79 ... Pago Neto 2,777.00
+  const summary=joined.match(
+    /Percepciones[\s\S]{0,90}?([0-9][0-9,]*\.\d{2})[\s\S]{0,90}?Deducciones[\s\S]{0,90}?([0-9][0-9,]*\.\d{2})/i
+  );
+  if(summary){
+    const p=parseTelmexMoney(summary[1])||0;
+    const d=parseTelmexMoney(summary[2])||0;
+    if(net && Math.abs((p-d)-net)<1){
+      return {perceptions:p,deductions:d,net};
+    }
+  }
+
+  return {perceptions:0,deductions:0,net};
+}
+const TELMEX_CONCEPTS=[
+  {code:'03',desc:'Sueldo',kind:'percepcion'},
+  {code:'12',desc:'Productividad',kind:'percepcion'},
+  {code:'17',desc:'Aguinaldo',kind:'percepcion'},
+  {code:'18',desc:'Gtos educacionales',kind:'percepcion'},
+  {code:'13',desc:'Manejo',kind:'percepcion'},
+  {code:'20',desc:'Ayuda renta',kind:'percepcion'},
+  {code:'21',desc:'Ayuda pasajes',kind:'percepcion'},
+  {code:'22',desc:'Ayuda despensa',kind:'percepcion'},
+  {code:'23',desc:'Tiempo ext doble',kind:'percepcion'},
+  {code:'24',desc:'Indem dia descanso',kind:'percepcion'},
+  {code:'38',desc:'Ahorro acumulado',kind:'percepcion'},
+  {code:'39',desc:'Premio del Ahorro',kind:'percepcion'},
+  {code:'51',desc:'Ahorro 11.53%',kind:'ahorro'},
+  {code:'53',desc:'Cuotas sindicales',kind:'deduccion'},
+  {code:'54',desc:'Seguro sindicato',kind:'deduccion'},
+  {code:'55',desc:'Impuesto',kind:'impuesto'},
+  {code:'69',desc:'Amort INFONAVIT',kind:'deduccion'},
+  {code:'74',desc:'Descuento caja',kind:'deduccion'},
+  {code:'93',desc:'Retención caja',kind:'deduccion'},
+  {code:'95',desc:'Seguro',kind:'deduccion'},
+  {code:'99',desc:'Ajuste redondeo',kind:'deduccion'}
+];
+
+function normalizeSearchText(s=''){
+  return String(s).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9.% ]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function parseConceptsFromOcr(text){
+  const lines=normalizeOcrText(text).split('\n').map(x=>x.trim()).filter(Boolean);
+  const out=[];
+
+  const byCode=new Map(TELMEX_CONCEPTS.map(def=>[def.code,def]));
+
+  for(const line of lines){
+    // Prefer the printed TELMEX concept code at the beginning of the line.
+    // Example: "55 Impuesto 5,397.25 ..."
+    const codeMatch=line.match(/^\s*(\d{1,2})(?:[.,](\d))?\s+/);
+    let def=null;
+    let printedCode='';
+
+    if(codeMatch){
+      printedCode=codeMatch[2] ? `${codeMatch[1]}.${codeMatch[2]}` : codeMatch[1].padStart(2,'0');
+
+      // TELMEX 95.0 / 95.1 share base definition 95.
+      def=byCode.get(printedCode) || byCode.get(codeMatch[1].padStart(2,'0')) || byCode.get(codeMatch[1]);
+    }
+
+    // Only if OCR lost the code, fall back to a strong description match.
+    if(!def){
+      const clean=normalizeSearchText(line);
+      for(const candidate of TELMEX_CONCEPTS){
+        const words=normalizeSearchText(candidate.desc).split(' ').filter(w=>w.length>3);
+        if(words.length && words.every(w=>clean.includes(w))){
+          def=candidate;
+          printedCode=candidate.code;
+          break;
+        }
+      }
+    }
+
+    if(!def)continue;
+
+    const vals=moneyTokens(line);
+    if(!vals.length)continue;
+
+    let amount;
+    if(def.kind==='percepcion'){
+      // Perception amount is normally the first large money value after date/hours.
+      amount=vals[vals.length-1];
+    }else{
+      // Deduction / tax amount is the first money value in Liquidación.
+      amount=vals[0];
+    }
+
+    // For adjustment, preserve OCR sign; don't force absolute value.
+    if(def.code==='99' && !Number.isFinite(amount))continue;
+
+    let hours=null;
+    if(/tiempo\s+ext/i.test(line)){
+      const nums=(line.match(/\b\d{1,2}\.\d{2}\b/g)||[]).map(Number)
+        .filter(n=>n>=0&&n<=24&&Math.abs(n-amount)>.001);
+      if(nums.length>=2)hours=nums[1];
+      else if(nums.length===1)hours=nums[0];
+    }
+
+    const codeOut=printedCode || def.code;
+
+    // Avoid duplicate OCR lines for the same exact concept/value.
+    const duplicate=out.some(c=>
+      c.code===codeOut &&
+      c.description===def.desc &&
+      Math.abs(Number(c.amount||0)-Number(amount||0))<0.01
+    );
+    if(duplicate)continue;
+
+    out.push({
+      code:codeOut,
+      description:def.desc,
+      kind:def.kind,
+      hours,
+      amount
+    });
+  }
+
+  return out;
+}
+function inferSpecialTelmexDocument(text,fileName=''){
+  const textNorm=normalizeSearchText(text);
+  const fileNorm=normalizeSearchText(fileName);
+
+  if(fileNorm.includes('gastos educ') || textNorm.includes('gastos educacionales')){
+    return {documentType:'Nómina extraordinaria',extraordinary:true};
+  }
+
+  if(fileNorm.includes('aguinaldo') || textNorm.includes('anticipo aguinaldo')){
+    return {documentType:'Nómina extraordinaria',extraordinary:true};
+  }
+
+  // "Premio del Ahorro" and "Ahorro acumulado" also occur as concepts
+  // in ordinary weekly payslips. Do not classify a weekly Pxx as Ahorro
+  // from those concepts alone.
+  const looksWeekly=/^p\d{1,2}(?:\D|$)/i.test(String(fileName||'').trim());
+  const explicitSavingsFile=fileNorm.includes('ahorro');
+  const explicitSavingsTitle=/dep[oó]sito\s+en\s+banco[\s_-]*ahorro/i.test(text);
+
+  if(!looksWeekly && (explicitSavingsFile || explicitSavingsTitle)){
+    return {documentType:'Ahorro',extraordinary:true};
+  }
+
+  return {documentType:'Nómina semanal',extraordinary:false};
+}
+function parseTelmexOcr(text,file){
+  const clean=normalizeOcrText(text);
+  const totals=findTotalsFromText(clean);
+  const concepts=parseConceptsFromOcr(clean);
+  const taxConcept=concepts.find(c=>String(c.code).replace(/^0/,'')==='55') || concepts.find(c=>c.kind==='impuesto');
+  const special=inferSpecialTelmexDocument(clean,file?.name||'');
+
+  let perceptions=Number(totals.perceptions||0);
+  let deductions=Number(totals.deductions||0);
+  let net=Number(totals.net||0);
+
+  if(!(perceptions>0) || !(deductions>0) || !(net>0)){
+    const conceptPerceptions=concepts
+      .filter(c=>c.kind==='percepcion')
+      .reduce((s,c)=>s+Number(c.amount||0),0);
+
+    const conceptDeductions=concepts
+      .filter(c=>['deduccion','impuesto','ahorro'].includes(c.kind))
+      .reduce((s,c)=>s+Number(c.amount||0),0);
+
+    if(!(perceptions>0) && conceptPerceptions>0)perceptions=conceptPerceptions;
+    if(!(deductions>0) && conceptDeductions>0)deductions=conceptDeductions;
+
+    const calculated=perceptions-deductions;
+    if(!(net>0) && calculated>0)net=calculated;
+  }
+
+  const salaryMatch=clean.replace(/\n/g,' ').match(/Salario\s+diario[\s\S]{0,50}?([0-9][0-9,]*\.\d{2})/i);
+  const daysMatch=clean.replace(/\n/g,' ').match(/D[ií]as\s+Periodo[\s\S]{0,30}?(\d{1,2})\b/i);
+
+  return {
+    person:'Ivan',
+    source:'TELMEX',
+    entryType:'nomina',
+    documentType:special.documentType,
+    paymentDate:findTelmexDate(clean),
+    period:findTelmexPeriod(clean,file?.name||''),
+    periodDays:daysMatch?Number(daysMatch[1]):0,
+    dailySalary:salaryMatch?parseTelmexMoney(salaryMatch[1])||0:0,
+    perceptions,
+    deductions,
+    taxes:Math.abs(Number(taxConcept?.amount||0)),
+    net,
+    extraordinary:special.extraordinary,
+    parserProfile:'telmex-local-ocr',
+    concepts,
+    fileName:file?.name||'',
+    totalsReliable:false,
+    totalsSource:'Reconstruido / requiere revisión',
+    ocrText:clean,
+    ocrSource:'OCR local · primera página',
+    createdAt:new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+}
+
+async function extractPdfTextAndCanvas(file){
+  const pdfjs=await ensurePdfJs();
+  const data=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data}).promise;
+  const page=await pdf.getPage(1);
+
+  let nativeText='';
+  try{
+    const content=await page.getTextContent();
+    nativeText=content.items.map(x=>x.str).join(' ');
+  }catch{}
+
+  const viewport=page.getViewport({scale:2.15});
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  await page.render({canvasContext:ctx,viewport}).promise;
+
+  return {nativeText:normalizeOcrText(nativeText),canvas};
+}
+
+async function getTelmexOcrWorker(onProgress){
+  const T=await ensureTesseract();
+  if(!telmexOcrWorker){
+    telmexOcrWorker=await T.createWorker('spa',1,{
+      logger:m=>{
+        if(m.status==='recognizing text'&&typeof m.progress==='number'&&typeof getTelmexOcrWorker._progress==='function'){
+          getTelmexOcrWorker._progress(m.progress*100);
+        }
+      }
+    });
+  }
+  getTelmexOcrWorker._progress=onProgress;
+  return telmexOcrWorker;
+}
+
+
+function cropCanvas(source,leftRatio,topRatio,widthRatio,heightRatio,scale=1.8){
+  const sx=Math.floor(source.width*leftRatio);
+  const sy=Math.floor(source.height*topRatio);
+  const sw=Math.floor(source.width*widthRatio);
+  const sh=Math.floor(source.height*heightRatio);
+  const out=document.createElement('canvas');
+  out.width=Math.max(1,Math.floor(sw*scale));
+  out.height=Math.max(1,Math.floor(sh*scale));
+  const ctx=out.getContext('2d',{willReadFrequently:true});
+  ctx.drawImage(source,sx,sy,sw,sh,0,0,out.width,out.height);
+  return out;
+}
+
+function parseBottomSummaryText(text){
+  const clean=normalizeOcrText(text);
+  const joined=clean.split('\n').join(' ');
+
+  const p=joined.match(/Percepciones[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
+  const d=joined.match(/Deducciones[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
+  const n=joined.match(/(?:Pago\s*Neto|Neto)[\s:$|]*([0-9][0-9,]*\.\d{2})/i);
+
+  if(p&&d&&n){
+    const perceptions=parseTelmexMoney(p[1]);
+    const deductions=parseTelmexMoney(d[1]);
+    const net=parseTelmexMoney(n[1]);
+    if([perceptions,deductions,net].every(Number.isFinite) &&
+       Math.abs((perceptions-deductions)-net)<0.05){
+      return {perceptions,deductions,net,reliable:true,text:clean};
+    }
+  }
+
+  const vals=moneyTokens(clean).filter(v=>v>=0 && v<1000000);
+  for(let i=0;i<vals.length;i++){
+    for(let j=0;j<vals.length;j++){
+      if(i===j)continue;
+      for(let k=0;k<vals.length;k++){
+        if(k===i||k===j)continue;
+        const P=vals[i],D=vals[j],N=vals[k];
+        if(P>=N && P>1000 && Math.abs((P-D)-N)<0.05){
+          return {perceptions:P,deductions:D,net:N,reliable:true,text:clean};
+        }
+      }
+    }
+  }
+
+  return {perceptions:0,deductions:0,net:0,reliable:false,text:clean};
+}
+async function readTelmexConceptTable(canvas,onProgress=()=>{}){
+  const crop=cropCanvas(canvas,0.002,0.30,0.995,0.47,2.25);
+  const worker=await getTelmexOcrWorker(onProgress);
+  try{
+    await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
+  }catch{}
+  const result=await worker.recognize(crop);
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+  return parseTelmexTableText(result?.data?.text||'');
+}
+
+async function readTelmexBottomTotals(canvas,onProgress=()=>{}){
+  const worker=await getTelmexOcrWorker(onProgress);
+  const cropA=cropCanvas(canvas,0.005,0.68,0.94,0.17,2.3);
+  const cropB=cropCanvas(canvas,0.015,0.79,0.92,0.19,2.3);
+
+  let textA='',textB='';
+  try{
+    await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
+  }catch{}
+  try{ textA=(await worker.recognize(cropA))?.data?.text||''; }catch{}
+  try{ textB=(await worker.recognize(cropB))?.data?.text||''; }catch{}
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3'}); }catch{}
+
+  return parseBottomSummaryText([textA,textB].join('\n'));
+}
+
+
+function telmexSpecialKind(text='',fileName=''){
+  const t=normalizeSearchText(`${fileName} ${text}`);
+  if(t.includes('anticipo aguinaldo'))return 'aguinaldo';
+  if(t.includes('gastos educ') || t.includes('gtos educacionales'))return 'educacionales';
+  return '';
+}
+
+async function ocrNumericCell(worker,canvas,left,top,width,height){
+  const crop=cropCanvas(canvas,left,top,width,height,3.0);
+  try{
+    await worker.setParameters({
+      tessedit_pageseg_mode:'7',
+      tessedit_char_whitelist:'0123456789,.-',
+      preserve_interword_spaces:'1'
+    });
+  }catch{}
+  const result=await worker.recognize(crop);
+  const text=normalizeOcrText(result?.data?.text||'');
+  const vals=moneyTokens(text);
+  return {value:vals.length?vals[0]:null,text};
+}
+
+async function readTelmexShortSpecial(canvas,kind,onProgress=()=>{}){
+  const worker=await getTelmexOcrWorker(onProgress);
+
+  const rowYs = kind==='aguinaldo'
+    ? [0.405,0.425,0.445,0.466,0.486]
+    : [0.405,0.428,0.451,0.474];
+
+  const codes = kind==='aguinaldo'
+    ? ['17','54','55','74','99']
+    : ['18','55','74','99'];
+
+  const defs = {
+    '17':{description:'Aguinaldo',kind:'percepcion'},
+    '18':{description:'Gtos educacionales',kind:'percepcion'},
+    '54':{description:'Seguro sindicato',kind:'deduccion'},
+    '55':{description:'Impuesto',kind:'impuesto'},
+    '74':{description:'Descuento caja',kind:'deduccion'},
+    '99':{description:'Ajuste redondeo',kind:'deduccion'}
+  };
+
+  const concepts=[];
+  const debug=[];
+
+  for(let i=0;i<codes.length;i++){
+    const code=codes[i], y=rowYs[i], def=defs[code];
+    const x=def.kind==='percepcion' ? 0.445 : 0.560;
+    const w=def.kind==='percepcion' ? 0.115 : 0.105;
+
+    const cell=await ocrNumericCell(worker,canvas,x,y,w,0.028);
+    debug.push(`${code}: ${cell.text}`);
+
+    if(Number.isFinite(cell.value)){
+      concepts.push({
+        code,
+        description:def.description,
+        kind:def.kind,
+        hours:null,
+        amount:Math.abs(cell.value)
+      });
+    }
+  }
+
+  const pCell=await ocrNumericCell(worker,canvas,0.420,0.735,0.150,0.038);
+  const dCell=await ocrNumericCell(worker,canvas,0.550,0.735,0.120,0.038);
+  const nCell=await ocrNumericCell(worker,canvas,0.700,0.735,0.155,0.038);
+
+  debug.push(`TOTAL P: ${pCell.text}`);
+  debug.push(`TOTAL D: ${dCell.text}`);
+  debug.push(`NETO: ${nCell.text}`);
+
+  try{ await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''}); }catch{}
+
+  const perceptions=pCell.value;
+  const deductions=dCell.value;
+  const net=nCell.value;
+  const reliable=[perceptions,deductions,net].every(Number.isFinite)
+    && Math.abs((perceptions-deductions)-net)<0.05;
+
+  return {
+    concepts,
+    perceptions:Number.isFinite(perceptions)?Math.abs(perceptions):0,
+    deductions:Number.isFinite(deductions)?Math.abs(deductions):0,
+    net:Number.isFinite(net)?Math.abs(net):0,
+    taxes:Number(concepts.find(c=>c.code==='55')?.amount||0),
+    reliable,
+    debug:debug.join('\n')
+  };
+}
+
+async function readTelmexPdfLocally(file,onProgress=()=>{}){
+  onProgress(3);
+
+  let nativeText='',canvas=null;
+  try{
+    const extracted=await extractPdfTextAndCanvas(file);
+    nativeText=extracted.nativeText||'';
+    canvas=extracted.canvas;
+  }catch(err){
+    throw new Error(`No se pudo abrir la primera página del PDF: ${err?.message||err}`);
+  }
+
+  let fullText='';
+  let parsed=null;
+  const stageErrors=[];
+
+  try{
+    if(nativeText.length>250 && /percepc|deducc|period|neto/i.test(nativeText)){
+      fullText=nativeText;
+      parsed=parseTelmexOcr(nativeText,file);
+      parsed.ocrSource='Texto interno del PDF · primera página';
+    }else{
+      onProgress(8);
+      const worker=await getTelmexOcrWorker(onProgress);
+      try{ await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''}); }catch{}
+      const result=await worker.recognize(canvas);
+      fullText=result?.data?.text||'';
+      parsed=parseTelmexOcr(fullText,file);
+      parsed.ocrSource='OCR local · primera página';
+    }
+  }catch(err){
+    stageErrors.push(`OCR general: ${err?.message||err}`);
+    const special=inferSpecialTelmexDocument('',file?.name||'');
+    parsed=normalizePayslipData({
+      person:'Ivan',source:'TELMEX',entryType:'nomina',
+      documentType:special.documentType,paymentDate:'',period:'',
+      perceptions:0,deductions:0,taxes:0,net:0,
+      extraordinary:special.extraordinary,parserProfile:'telmex-local-ocr',
+      concepts:[],fileName:file?.name||'',totalsReliable:false,totalsSource:'No leído'
+    },file);
+  }
+
+  const specialKind=telmexSpecialKind(fullText,file?.name||'');
+
+  if(specialKind){
+    try{
+      onProgress(68);
+      const specialData=await readTelmexShortSpecial(
+        canvas,
+        specialKind,
+        p=>onProgress(Math.min(98,68+p*0.30))
+      );
+
+      if(specialData.concepts.length)parsed.concepts=specialData.concepts;
+      if(specialData.taxes>0)parsed.taxes=specialData.taxes;
+
+      if(specialData.reliable){
+        parsed.perceptions=specialData.perceptions;
+        parsed.deductions=specialData.deductions;
+        parsed.net=specialData.net;
+        parsed.totalsReliable=true;
+        parsed.totalsSource='Tabla corta TELMEX · celdas independientes';
+      }else{
+        parsed.totalsReliable=false;
+        parsed.totalsSource='Tabla corta TELMEX · requiere revisión';
+      }
+
+      parsed.ocrText=[
+        normalizeOcrText(fullText),
+        '',
+        '--- LECTOR ESPECIAL TELMEX ---',
+        specialData.debug||'',
+        '',
+        '--- DIAGNÓSTICO ---',
+        stageErrors.length?stageErrors.join('\n'):'Sin errores de ejecución'
+      ].join('\n');
+
+      parsed.ocrSource=[
+        parsed.ocrSource||'OCR TELMEX',
+        specialKind==='aguinaldo'?'Perfil: Anticipo Aguinaldo':'Perfil: Gastos Educacionales'
+      ].join(' · ');
+
+      onProgress(100);
+      return parsed;
+    }catch(err){
+      stageErrors.push(`Lector especial: ${err?.message||err}`);
+    }
+  }
+
+  let table={concepts:[],text:''};
+  let bottom={perceptions:0,deductions:0,net:0,reliable:false,text:''};
+
+  try{
+    onProgress(72);
+    table=await readTelmexConceptTable(canvas,p=>onProgress(Math.min(87,72+p*0.15)));
+    if(table?.concepts?.length){
+      parsed.concepts=table.concepts;
+      const tax=table.concepts.find(c=>String(c.code).replace(/^0/,'').startsWith('55'));
+      if(tax)parsed.taxes=Math.abs(Number(tax.amount||0));
+    }
+  }catch(err){
+    stageErrors.push(`Tabla de conceptos: ${err?.message||err}`);
+  }
+
+  if(!(parsed.taxes>0)){
+    try{
+      const full=normalizeOcrText(fullText).split('\n').join(' ');
+      const taxMatch=full.match(/(?:^|\s)55\s+Impuesto[\s\S]{0,80}?([0-9][0-9,]*\.\d{2})/i);
+      if(taxMatch)parsed.taxes=Math.abs(parseTelmexMoney(taxMatch[1])||0);
+    }catch{}
+  }
+
+  try{
+    onProgress(89);
+    bottom=await readTelmexBottomTotals(canvas,p=>onProgress(Math.min(99,89+p*0.10)));
+    if(bottom?.reliable){
+      parsed.perceptions=bottom.perceptions;
+      parsed.deductions=bottom.deductions;
+      parsed.net=bottom.net;
+      parsed.totalsReliable=true;
+      parsed.totalsSource='Resumen inferior TELMEX';
+    }else{
+      parsed.totalsReliable=false;
+      parsed.totalsSource='Reconstruido / requiere revisión';
+    }
+  }catch(err){
+    stageErrors.push(`Totales: ${err?.message||err}`);
+    parsed.totalsReliable=false;
+    parsed.totalsSource='OCR de totales falló / requiere revisión';
+  }
+
+  parsed.ocrText=[
+    normalizeOcrText(fullText),'',
+    '--- OCR TABLA DE CONCEPTOS ---',table?.text||'','',
+    '--- OCR RESUMEN INFERIOR ---',bottom?.text||'','',
+    '--- DIAGNÓSTICO ---',
+    stageErrors.length?stageErrors.join('\n'):'Sin errores de ejecución'
+  ].join('\n');
+
+  parsed.ocrSource=[
+    parsed.ocrSource||'OCR TELMEX',
+    stageErrors.length?`Advertencias: ${stageErrors.length}`:''
+  ].filter(Boolean).join(' · ');
+
+  onProgress(100);
+  return parsed;
+}
+
+async function processOnePayslip(file,person,profile,onProgress=()=>{}){
+  let chosenProfile=profile||'auto';
+
+  if(chosenProfile==='auto'){
+    onProgress(2);
+    const detected=await detectPayslipProfile(file);
+    chosenProfile=detected.profile;
+  }
+
+  if(chosenProfile==='sep'){
+    const data=await readSepPdfLocally(file,onProgress);
+    return normalizePayslipData(data,file);
+  }
+
+  if(chosenProfile==='telmex'){
+    const data=await readTelmexPdfLocally(file,onProgress);
+    return normalizePayslipData(data,file);
+  }
+
+  // Generic profile: OCR and keep it in review mode.
+  const extracted=await extractPdfTextAndCanvas(file);
+  let genericText=extracted.nativeText||'';
+  if(genericText.length<160){
+    const worker=await getTelmexOcrWorker(onProgress);
+    const result=await worker.recognize(extracted.canvas);
+    genericText=normalizeOcrText(result?.data?.text||'');
+  }
+  return normalizePayslipData({
+    person,source:'Nómina',paymentDate:'',period:'',
+    perceptions:0,deductions:0,taxes:0,net:0,documentType:'Nómina',
+    parserProfile:'generic-local-ocr',concepts:[],
+    ocrText:genericText,
+    ocrSource:'Perfil no reconocido · requiere revisión',
+    totalsReliable:false,
+    totalsSource:'No detectado'
+  },file);
+}
+
+async function processPayslip(){
+  if(!selectedIncomeFiles.length)return;
+  const person=document.getElementById('payslipPerson').value;
+  const profile=document.getElementById('payslipProfile').value;
+  payslipQueue=selectedIncomeFiles.map(file=>({file,status:'pending',data:null,error:null}));
+  renderBatchQueue();
+  for(let i=0;i<payslipQueue.length;i++){
+    payslipQueue[i].status='processing';
+    renderBatchQueue();
+    try{
+      const data=await processOnePayslip(
+        payslipQueue[i].file,
+        person,
+        profile,
+        progress=>{
+          payslipQueue[i].progress=progress;
+          renderBatchQueue();
+        }
+      );
+      payslipQueue[i].data=data;
+      payslipQueue[i].status=validationState(data);
+    }catch(err){
+      payslipQueue[i].status='error';
+      payslipQueue[i].error=err?.message||'No se pudo procesar';
+      console.error('FinoFinanza TELMEX OCR:',err);
+    }
+    renderBatchQueue();
+  }
+  const valid=payslipQueue.filter(x=>x.status==='valid').length;
+  const review=payslipQueue.filter(x=>x.status==='review').length;
+  const error=payslipQueue.filter(x=>x.status==='error').length;
+  if(valid)toast(`${valid} volante${valid===1?'':'s'} validado${valid===1?'':'s'}.`);
+  if(review||error)toast(`${review} para revisar · ${error} con error. Abre 👁 para revisar el texto detectado.`,'warn');
+  const first=payslipQueue.findIndex(x=>x.data);
+  if(first>=0)openBatchPreview(first);
+}
+
+function normalizePayslipData(raw,file=null){
+  const d={...raw};
+  return {
+    person:d.person||document.getElementById('payslipPerson').value,
+    source:d.source||(
+      document.getElementById('payslipProfile').value==='telmex'?'TELMEX':
+      document.getElementById('payslipProfile').value==='sep'?'SEP':
+      document.getElementById('payslipPerson').value==='Yorsky'?'SEP':'Nómina'
+    ),
+    entryType:'nomina',
+    documentType:d.documentType||d.tipo_documento||'Nómina',
+    paymentDate:d.paymentDate||d.fecha_pago||'',
+    period:d.period||d.periodo||'',
+    periodDays:Number(d.periodDays??d.dias_periodo??0),
+    dailySalary:Number(d.dailySalary??d.salario_diario??0),
+    perceptions:Number(d.perceptions??d.total_percepciones??0),
+    deductions:Number(d.deductions??d.total_deducciones??0),
+    taxes:Math.abs(Number(d.taxes??d.impuestos??0)),
+    net:Number(d.net??d.neto??0),
+    extraordinary:Boolean(d.extraordinary),
+    parserProfile:d.parserProfile||document.getElementById('payslipProfile').value,
+    concepts:(d.concepts||d.conceptos||[]).map(c=>({
+      code:c.code??c.clave??'',
+      description:c.description??c.descripcion??'',
+      kind:c.kind??c.tipo??'',
+      days:c.days??c.dias??null,
+      hours:c.hours??c.horas??null,
+      amount:Number(c.amount??c.importe??0),
+      accumulated:c.accumulated??c.acumulado??null
+    })),
+    fileName:file?.name||d.fileName||'',
+    ocrText:d.ocrText||'',
+    ocrSource:d.ocrSource||'',
+    totalsSource:d.totalsSource||'',
+    totalsReliable:Boolean(d.totalsReliable),
+    centerWork:d.centerWork||d.centroTrabajo||'',
+    employeeName:d.employeeName||d.nombreEmpleado||'',
+    createdAt:d.createdAt||new Date().toISOString(),
+    updatedAt:new Date().toISOString()
+  };
+}
+
+function getAiFallbackEndpoint(){
+  return localStorage.getItem(AI_ENDPOINT_STORAGE_KEY)||'';
+}
+
+function setAiFallbackEndpoint(value){
+  const endpoint=String(value||'').trim();
+  if(endpoint)localStorage.setItem(AI_ENDPOINT_STORAGE_KEY,endpoint);
+  else localStorage.removeItem(AI_ENDPOINT_STORAGE_KEY);
+  return endpoint;
+}
+function getAiAccessToken(){return localStorage.getItem(AI_ACCESS_TOKEN_STORAGE_KEY)||'';}
+function setAiAccessToken(value){
+  const token=String(value||'').trim();
+  if(token)localStorage.setItem(AI_ACCESS_TOKEN_STORAGE_KEY,token);
+  else localStorage.removeItem(AI_ACCESS_TOKEN_STORAGE_KEY);
+  return token;
+}
+
+function aiResultLooksValid(data){
+  if(!data || typeof data!=='object')return false;
+  const p=Number(data.perceptions??data.total_percepciones??0);
+  const d=Number(data.deductions??data.total_deducciones??0);
+  const n=Number(data.net??data.neto??0);
+  if(!(p>0) || !(d>=0) || !(n>=0))return false;
+  return Math.abs((p-d)-n)<0.05;
+}
+
+async function pdfFirstPageAsJpeg(file){
+  const pdfjs=await ensurePdfJs();
+  const bytes=await file.arrayBuffer();
+  const pdf=await pdfjs.getDocument({data:bytes}).promise;
+  const page=await pdf.getPage(1);
+  const viewport=page.getViewport({scale:1.65});
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d');
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  await page.render({canvasContext:ctx,viewport}).promise;
+  return canvas.toDataURL('image/jpeg',0.88);
+}
+
+function buildAiFallbackPrompt(item){
+  const d=item?.data||{};
+  return {
+    task:'read_mexican_payroll_payslip',
+    schemaVersion:AI_FALLBACK_VERSION,
+    person:d.person||'Ivan',
+    employer:d.source||'TELMEX',
+    fileName:item?.file?.name||d.fileName||'',
+    knownDocumentType:d.documentType||'',
+    ocrText:d.ocrText||'',
+    instructions:[
+      'Read only values visible in the payslip image.',
+      'Do not infer missing financial amounts.',
+      'Return numbers as decimals without currency symbols.',
+      'Taxes are a subset of deductions and must also be returned separately.',
+      'For TELMEX preserve printed concept codes and descriptions.',
+      'If Periodo is 00/0000, return an empty period.',
+      'Return JSON only.'
+    ],
+    expectedSchema:{
+      paymentDate:'YYYY-MM-DD',
+      period:'string or empty',
+      documentType:'string',
+      extraordinary:'boolean',
+      perceptions:'number',
+      deductions:'number',
+      taxes:'number',
+      net:'number',
+      concepts:[{
+        code:'string',
+        description:'string',
+        kind:'percepcion|deduccion|impuesto|ahorro',
+        hours:'number|null',
+        amount:'number'
+      }],
+      confidence:'number 0..1',
+      notes:'string'
+    }
+  };
+}
+
+async function analyzeCurrentPayslipWithAi(){
+  if(currentPayslipQueueIndex===null || !payslipQueue[currentPayslipQueueIndex]){
+    toast('Abre primero un volante para revisarlo.','warn');
+    return;
+  }
+
+  const item=payslipQueue[currentPayslipQueueIndex];
+  const endpoint=getAiFallbackEndpoint();
+  const accessToken=getAiAccessToken();
+
+  if(!endpoint || !accessToken){
+    toast('Configura el acceso a IA desde el módulo Configuración.','warn');
+    return;
+  }
+
+  const btn=document.getElementById('incomeAiAnalyzeBtn');
+  const note=document.getElementById('incomeAiNote');
+  btn.disabled=true;
+  btn.textContent='Analizando…';
+  if(note)note.textContent='Preparando la primera página y enviándola al fallback de IA…';
+
+  try{
+    const imageDataUrl=await pdfFirstPageAsJpeg(item.file);
+    const payload={...buildAiFallbackPrompt(item),imageDataUrl};
+
+    const response=await fetch(endpoint,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-FinoFinanza-AI-Token':accessToken
+      },
+      body:JSON.stringify(payload)
+    });
+
+    if(!response.ok){
+      let detail='';
+      try{const e=await response.json(); detail=e?.detail||e?.error||'';}catch{}
+      throw new Error(`HTTP ${response.status}${detail?` · ${detail}`:''}`);
+    }
+    const raw=await response.json();
+    const result=raw?.data||raw?.result||raw;
+    if(!result || typeof result!=='object')throw new Error('Respuesta de IA inválida.');
+
+    const merged=normalizePayslipData({
+      ...item.data,
+      ...result,
+      person:item.data?.person||document.getElementById('payslipPerson').value,
+      source:item.data?.source||'Nómina',
+      parserProfile:`${item.data?.parserProfile||'generic'}-ai-fallback`,
+      fileName:item.file?.name||item.data?.fileName||'',
+      ocrText:item.data?.ocrText||'',
+      ocrSource:`IA fallback · ${item.data?.ocrSource||'OCR local'}`,
+      totalsReliable:aiResultLooksValid(result),
+      totalsSource:'IA fallback'
+    },item.file);
+
+    item.data=merged;
+    item.status=validationState(merged);
+    item.error=null;
+    renderBatchQueue();
+    renderPayslipPreview(merged);
+
+    if(note){
+      note.textContent=item.status==='valid'
+        ? '✓ La IA reconstruyó el volante y los totales cuadran.'
+        : 'La IA devolvió datos, pero el volante aún requiere revisión.';
+    }
+
+    toast(
+      item.status==='valid' ? 'Volante analizado y validado con IA.' : 'La IA terminó, pero el volante sigue en revisión.',
+      item.status==='valid' ? 'ok' : 'warn'
+    );
+  }catch(err){
+    console.error('FinoFinanza AI fallback:',err);
+    if(note)note.textContent=`Error del fallback de IA: ${err?.message||err}`;
+    toast('No se pudo completar el análisis con IA.','error');
+  }finally{
+    btn.disabled=false;
+    btn.textContent='✦ Analizar con IA';
+  }
+}
+
+function renderPayslipPreview(raw){
+  currentPayslipPreview=normalizePayslipData(raw);
+  const d=currentPayslipPreview;
+  document.getElementById('incomePreviewEmpty').style.display='none';
+  document.getElementById('incomePreview').classList.add('show');
+  document.getElementById('previewPaymentDate').value=d.paymentDate||'';
+  document.getElementById('previewPeriod').value=d.period||'';
+  document.getElementById('previewDocumentType').value=[...document.getElementById('previewDocumentType').options].some(o=>o.value===d.documentType)?d.documentType:'Otro';
+  document.getElementById('previewExtraordinary').value=String(Boolean(d.extraordinary));
+  document.getElementById('previewPerceptions').textContent=money(d.perceptions);
+  document.getElementById('previewDeductions').textContent=money(d.deductions);
+  document.getElementById('previewTaxes').textContent=money(d.taxes);
+  document.getElementById('previewNet').textContent=money(d.net);
+  const detectedMeta=document.getElementById('previewDetectedMeta');
+  if(detectedMeta){
+    const profileLabel=String(d.parserProfile||'').startsWith('sep')?'SEP':String(d.parserProfile||'').startsWith('telmex')?'TELMEX':'Genérico';
+    detectedMeta.textContent=`Detectado: ${profileLabel} · ${personDisplayName(d.person)} · ${d.source||'Nómina'}${d.centerWork?` · Centro ${d.centerWork}`:''}`;
+  }
+
+  const ocrDetails=document.getElementById('previewOcrDetails');
+  const ocrText=document.getElementById('previewOcrText');
+  const ocrSource=document.getElementById('previewOcrSource');
+  if(ocrSource){
+    const parts=[d.ocrSource||''];
+    if(d.totalsSource)parts.push(`Totales: ${d.totalsSource}`);
+    if(Array.isArray(d.concepts) && d.concepts.length)parts.push(`Conceptos detectados: ${d.concepts.length}`);
+    if(d.taxes>0)parts.push(`Impuesto detectado: ${money(d.taxes)}`);
+    ocrSource.textContent=parts.filter(Boolean).join(' · ');
+  }
+  if(ocrDetails)ocrDetails.style.display=d.ocrText?'':'none';
+  if(ocrText)ocrText.textContent=d.ocrText||'';
+
+  const calc=d.perceptions-d.deductions;
+  const ok=Math.abs(calc-d.net)<0.02;
+
+  const aiPanel=document.getElementById('incomeAiPanel');
+  const aiBtn=document.getElementById('incomeAiAnalyzeBtn');
+  const aiNote=document.getElementById('incomeAiNote');
+  const aiConfigured=Boolean(getAiFallbackEndpoint() && getAiAccessToken());
+  if(aiPanel){
+    const queueItem=currentPayslipQueueIndex!==null ? payslipQueue[currentPayslipQueueIndex] : null;
+    aiPanel.style.display=queueItem?.status==='review' ? '' : 'none';
+  }
+  if(aiBtn){
+    aiBtn.disabled=!aiConfigured;
+    aiBtn.title=aiConfigured
+      ? 'Analizar este volante con IA'
+      : 'Configura IA desde el módulo Configuración';
+  }
+  if(aiNote){
+    aiNote.textContent=aiConfigured
+      ? 'IA privada habilitada para este dispositivo.'
+      : 'IA deshabilitada. Configura el acceso desde Configuración.';
+  }
+  const val=document.getElementById('previewValidation');
+  const trulyValid=ok && d.totalsReliable;
+  val.className='income-validation '+(trulyValid?'ok':'warn');
+  if(trulyValid){
+    val.textContent=`✓ Validado con totales impresos: ${money(d.perceptions)} − ${money(d.deductions)} = ${money(d.net)}`;
+  }else if(ok){
+    val.textContent='⚠ Revisar: falta validar algún dato del volante.';
+  }else{
+    val.textContent=`⚠ Revisar: el cálculo da ${money(calc)} y el neto leído es ${money(d.net)}.`;
+  }
+
+  document.getElementById('previewConceptRows').innerHTML=d.concepts.length
+    ? d.concepts.map(c=>`<tr><td>${esc(c.code)}</td><td>${esc(c.description)}</td><td>${esc(c.kind)}</td><td>${c.hours??''}</td><td>${money(c.amount)}</td></tr>`).join('')
+    : '<tr><td colspan="5" style="text-align:center;color:#667085">Sin conceptos detectados</td></tr>';
+}
+async function savePayslip(){
+  if(!currentPayslipPreview)return;
+  const d={
+    ...currentPayslipPreview,
+    paymentDate:document.getElementById('previewPaymentDate').value,
+    period:document.getElementById('previewPeriod').value.trim(),
+    documentType:document.getElementById('previewDocumentType').value,
+    extraordinary:document.getElementById('previewExtraordinary').value==='true',
+    updatedAt:new Date().toISOString()
+  };
+  if(!d.paymentDate){
+    toast('Indica la fecha de pago antes de guardar.','warn');return;
+  }
+  if(currentPayslipQueueIndex!==null && payslipQueue[currentPayslipQueueIndex]){
+    payslipQueue[currentPayslipQueueIndex].data=d;
+    payslipQueue[currentPayslipQueueIndex].status=validationState(d);
+    renderBatchQueue();
+  }
+  const all=await incomeGetAll();
+  const duplicate=all.find(x=>x.entryType==='nomina'&&x.person===d.person&&x.paymentDate===d.paymentDate&&String(x.period||'')===String(d.period||'')&&x.source===d.source);
+  if(duplicate){
+    const replace=confirm('Ya existe un volante de esta persona, fecha y periodo. ¿Deseas reemplazarlo?');
+    if(!replace)return;
+    await incomePut({...duplicate,...d,id:duplicate.id,createdAt:duplicate.createdAt||d.createdAt});
+    toast('Volante reemplazado.');
+  }else{
+    await incomeAdd(d);
+    toast('Volante guardado.');
+  }
+  await renderIncomeHistory();
+  switchIncomeView('history');
+}
+
+
+async function saveAllValidPayslips(){
+  const candidates=payslipQueue.filter(item=>
+    item.data && ['valid','review'].includes(item.status)
+  );
+
+  if(!candidates.length){
+    toast('No hay volantes procesados para guardar.','warn');
+    return;
+  }
+
+  const reviewCount=candidates.filter(item=>item.status==='review').length;
+  let includeReview=false;
+
+  if(reviewCount){
+    includeReview=confirm(
+      `${reviewCount} volante${reviewCount===1?'':'s'} está${reviewCount===1?'':'n'} marcado${reviewCount===1?'':'s'} como "Revisar".\n\n`+
+      `Aceptar = guardar también esos volantes.\nCancelar = guardar únicamente los validados.`
+    );
+  }
+
+  const toSave=candidates.filter(item=>
+    item.status==='valid' || (includeReview && item.status==='review')
+  );
+
+  if(!toSave.length){
+    toast('No hay volantes validados para guardar.','warn');
+    return;
+  }
+
+  const existing=await incomeGetAll();
+  let saved=0,skipped=0;
+
+  for(const item of toSave){
+    const d={...item.data};
+
+    if(currentPayslipQueueIndex!==null && payslipQueue[currentPayslipQueueIndex]===item){
+      d.paymentDate=document.getElementById('previewPaymentDate')?.value||d.paymentDate;
+      d.period=document.getElementById('previewPeriod')?.value.trim()||d.period;
+      d.documentType=document.getElementById('previewDocumentType')?.value||d.documentType;
+      d.extraordinary=document.getElementById('previewExtraordinary')?.value==='true';
+    }
+
+    const duplicate=existing.find(x=>
+      x.entryType==='nomina' &&
+      x.person===d.person &&
+      x.paymentDate===d.paymentDate &&
+      String(x.period||'')===String(d.period||'') &&
+      x.source===d.source &&
+      String(x.documentType||'')===String(d.documentType||'')
+    );
+
+    if(duplicate){
+      skipped++;
+      continue;
+    }
+
+    const savedItem={
+      ...d,
+      reviewRequired:item.status==='review',
+      importStatus:item.status,
+      createdAt:d.createdAt||new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    };
+
+    await incomeAdd(savedItem);
+    existing.push(savedItem);
+    saved++;
+  }
+
+  await renderIncomeHistory();
+
+  if(saved)toast(`${saved} volante${saved===1?'':'s'} guardado${saved===1?'':'s'}.`);
+  if(skipped)setTimeout(()=>toast(`${skipped} duplicado${skipped===1?'':'s'} omitido${skipped===1?'':'s'}.`,'warn'),250);
+
+  if(saved)switchIncomeView('history');
+}
+
+
+function collectHistoryFilters(){
+  return {
+    q:document.getElementById('incomeSearch')?.value.trim().toLowerCase()||'',
+    person:document.getElementById('incomeFilterPerson')?.value||'',
+    kind:document.getElementById('incomeFilterKind')?.value||'',
+    month:document.getElementById('incomeFilterMonth')?.value||'',
+    from:document.getElementById('incomeFilterFrom')?.value||'',
+    to:document.getElementById('incomeFilterTo')?.value||''
+  };
+}
+async function renderIncomeHistory(){
+  if(!incomeDb)return;
+  const rowsEl=document.getElementById('incomeHistoryRows');
+  if(!rowsEl)return;
+  const all=(await incomeGetAll());
+  const f=collectHistoryFilters();
+  const filtered=all.filter(item=>{
+    if(f.person&&item.person!==f.person)return false;
+    if(f.kind&&item.entryType!==f.kind)return false;
+    if(f.month&&monthKey(item.paymentDate)!==f.month)return false;
+    if(f.from && String(item.paymentDate||'')<f.from)return false;
+    if(f.to && String(item.paymentDate||'')>f.to)return false;
+    if(f.q){
+      const hay=[
+        item.source,item.concept,item.period,item.incomeType,item.documentType,
+        normalizedPerson(item.person),item.note,item.paymentDate
+      ].join(' ').toLowerCase();
+      if(!hay.includes(f.q))return false;
+    }
+    return true;
+  });
+  filtered.sort(compareHistoryItems);
+  updateHistorySortHeaders();
+  document.getElementById('incomeHistoryCount').textContent=`${all.length} registro${all.length===1?'':'s'}`;
+  document.getElementById('incomeHistoryShowing').textContent=`${filtered.length} de ${all.length} registros`;
+  document.getElementById('incomeHistoryTotal').textContent=money(filtered.reduce((s,x)=>s+netFor(x),0));
+
+  rowsEl.innerHTML=filtered.length?filtered.map(item=>{
+    const concept=item.entryType==='manual'
+      ? item.concept
+      : `${item.documentType||'Nómina'}${item.period?` · ${item.period}`:''}`;
+    const pillClass=item.entryType==='manual'
+      ? 'manual'
+      : item.source==='TELMEX'
+        ? 'telmex'
+        : item.source==='SEP'
+          ? 'sep'
+          : isPayrollIncome(item)
+            ? 'payroll'
+            : item.person==='Yorsky'
+              ? 'yorsky'
+              : '';
+    return `<tr class="income-history-row" data-income-id="${item.id}">
+      <td>${localDate(item.paymentDate)}</td>
+      <td>${esc(personDisplayName(item.person))}</td>
+      <td><span class="income-pill ${pillClass}">${esc(item.source||'—')}</span></td>
+      <td><strong>${esc(concept||'—')}</strong></td>
+      <td>${esc(typeLabel(item))}</td>
+      <td><strong>${money(netFor(item))}</strong></td>
+      <td><div class="income-row-actions">
+        ${item.entryType==='manual'?`<button class="income-icon-btn" data-income-edit="${item.id}" title="Editar">✏️</button>`:''}
+        <button class="income-icon-btn" data-income-delete="${item.id}" title="Eliminar">🗑️</button>
+      </div></td>
+    </tr>`;
+  }).join(''):'<tr><td colspan="7" style="text-align:center;color:#667085;padding:24px">No hay ingresos que coincidan con los filtros.</td></tr>';
+
+  rowsEl.querySelectorAll('[data-income-edit]').forEach(btn=>btn.addEventListener('click',async e=>{
+    e.stopPropagation();await editManualIncome(btn.dataset.incomeEdit);
+  }));
+  rowsEl.querySelectorAll('[data-income-delete]').forEach(btn=>btn.addEventListener('click',async e=>{
+    e.stopPropagation();
+    const item=await incomeGet(btn.dataset.incomeDelete);
+    if(!item)return;
+    if(!confirm(`¿Eliminar este ingreso de ${money(netFor(item))}?`))return;
+    await incomeDelete(btn.dataset.incomeDelete);
+    toast('Ingreso eliminado.');
+    await renderIncomeHistory();
+  }));
+  rowsEl.querySelectorAll('.income-history-row').forEach(row=>row.addEventListener('click',()=>showIncomeDetail(row.dataset.incomeId)));
+}
+
+async function editManualIncome(id){
+  const item=await incomeGet(id);
+  if(!item||item.entryType!=='manual')return;
+  editingIncomeId=item.id;
+  document.getElementById('manualPerson').value=item.person||'Ivan';
+  document.getElementById('manualDate').value=item.paymentDate||'';
+  document.getElementById('manualSource').value=item.source||'';
+  document.getElementById('manualType').value=item.incomeType||'Ordinario';
+  document.getElementById('manualConcept').value=item.concept||'';
+  document.getElementById('manualAmount').value=item.amount||'';
+  document.getElementById('manualNote').value=item.note||'';
+  document.getElementById('manualIncomeTitle').textContent='Editar ingreso';
+  document.getElementById('manualSaveBtn').textContent='Guardar cambios';
+  document.getElementById('manualCancelEdit').style.display='';
+  switchIncomeView('manual');
+}
+
+async function showIncomeDetail(id){
+  const item=await incomeGet(id);
+  if(!item)return;
+  const body=document.getElementById('incomeDetailBody');
+  if(item.entryType==='manual'){
+    body.innerHTML=`
+      <div class="income-form-grid">
+        <div class="income-field"><label>Fecha</label><strong>${localDate(item.paymentDate)}</strong></div>
+        <div class="income-field"><label>Persona</label><strong>${esc(normalizedPerson(item.person))}</strong></div>
+        <div class="income-field"><label>Fuente</label><strong>${esc(item.source)}</strong></div>
+        <div class="income-field"><label>Categoría</label><strong>${esc(item.incomeType)}</strong></div>
+        <div class="income-field full"><label>Concepto</label><strong>${esc(item.concept)}</strong></div>
+        <div class="income-field"><label>Monto</label><strong style="font-size:18px">${money(item.amount)}</strong></div>
+        <div class="income-field full"><label>Nota</label><div>${esc(item.note||'—')}</div></div>
+      </div>`;
+  }else{
+    const calc=Number(item.perceptions||0)-Number(item.deductions||0);
+    body.innerHTML=`
+      <div class="income-form-grid" style="margin-bottom:12px">
+        <div class="income-field"><label>Persona</label><strong>${esc(normalizedPerson(item.person))}</strong></div>
+        <div class="income-field"><label>Fuente</label><strong>${esc(item.source)}</strong></div>
+        <div class="income-field"><label>Fecha de pago</label><strong>${localDate(item.paymentDate)}</strong></div>
+        <div class="income-field"><label>Periodo</label><strong>${esc(item.period||'—')}</strong></div>
+        ${item.centerWork?`<div class="income-field"><label>Centro de trabajo</label><strong>${esc(item.centerWork)}</strong></div>`:''}
+      </div>
+      <div class="income-kpis">
+        <div class="income-kpi"><span>Percepciones</span><strong>${money(item.perceptions)}</strong></div>
+        <div class="income-kpi"><span>Deducciones</span><strong>${money(item.deductions)}</strong></div>
+        <div class="income-kpi"><span>Impuestos</span><strong>${money(item.taxes)}</strong></div>
+        <div class="income-kpi net"><span>Neto</span><strong>${money(item.net)}</strong></div>
+      </div>
+      <div class="income-validation ${Math.abs(calc-Number(item.net||0))<.02?'ok':'warn'}">
+        ${Math.abs(calc-Number(item.net||0))<.02?'✓ Volante matemáticamente consistente.':'⚠ El volante requiere revisión matemática.'}
+      </div>
+      <div class="income-table-wrap">
+        <table class="income-table"><thead><tr><th>Clave</th><th>Concepto</th><th>Tipo</th><th>Horas</th><th>Importe</th></tr></thead>
+        <tbody>${(item.concepts||[]).map(c=>`<tr><td>${esc(c.code)}</td><td>${esc(c.description)}</td><td>${esc(c.kind)}</td><td>${c.hours??''}</td><td>${money(c.amount)}</td></tr>`).join('')}</tbody></table>
+      </div>`;
+  }
+  document.getElementById('incomeDetailModal').classList.add('show');
+}
+
+function bindIncomeEvents(){
+  document.querySelectorAll('#ingresos [data-income-view]').forEach(btn=>btn.addEventListener('click',()=>switchIncomeView(btn.dataset.incomeView)));
+
+  document.getElementById('manualIncomeForm').addEventListener('submit',saveManualIncome);
+  document.getElementById('manualCancelEdit').addEventListener('click',resetManualForm);
+  document.getElementById('addIncomePersonBtn')?.addEventListener('click',addLocalPerson);
+  document.getElementById('addIncomeSourceBtn')?.addEventListener('click',addLocalSource);
+  document.getElementById('addIncomeCategoryBtn')?.addEventListener('click',addLocalCategory);
+
+  const fileInput=document.getElementById('incomePdfInput');
+  const drop=document.getElementById('incomeDropzone');
+  document.getElementById('incomeSelectPdf').addEventListener('click',()=>fileInput.click());
+  fileInput.addEventListener('change',e=>addPdfFiles(e.target.files));
+  ['dragenter','dragover'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.classList.add('dragover')}));
+  ['dragleave','drop'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.classList.remove('dragover')}));
+  drop.addEventListener('drop',e=>addPdfFiles(e.dataTransfer.files));
+  document.getElementById('incomeRemovePdf').addEventListener('click',clearPdfFile);
+  document.getElementById('incomeProcessPdf').addEventListener('click',processPayslip);
+  document.getElementById('saveAllPayslipsBtn').addEventListener('click',saveAllValidPayslips);
+  document.getElementById('savePayslipBtn').addEventListener('click',savePayslip);
+
+  document.getElementById('incomeAiAnalyzeBtn')?.addEventListener('click',analyzeCurrentPayslipWithAi);
+
+  ['incomeSearch','incomeFilterPerson','incomeFilterKind','incomeFilterMonth','incomeFilterFrom','incomeFilterTo'].forEach(id=>{
+    const el=document.getElementById(id);
+    el?.addEventListener(id==='incomeSearch'?'input':'change',renderIncomeHistory);
+  });
+
+  document.querySelectorAll('#ingresos [data-history-sort]').forEach(th=>{
+    th.addEventListener('click',()=>{
+      const key=th.dataset.historySort;
+      if(incomeHistorySort.key===key)incomeHistorySort.dir=incomeHistorySort.dir==='asc'?'desc':'asc';
+      else{
+        incomeHistorySort.key=key;
+        incomeHistorySort.dir=key==='date'||key==='net'?'desc':'asc';
+      }
+      renderIncomeHistory();
+    });
+  });
+
+  document.getElementById('incomeDetailClose').addEventListener('click',()=>document.getElementById('incomeDetailModal').classList.remove('show'));
+  document.getElementById('incomeDetailModal').addEventListener('click',e=>{
+    if(e.target.id==='incomeDetailModal')e.currentTarget.classList.remove('show');
+  });
+
+  document.getElementById('payslipPerson').addEventListener('change',e=>{
+    const profile=document.getElementById('payslipProfile');
+    if(!e.target.value||profile.value==='auto')return;
+    if(e.target.value==='Yorsky' && profile.value==='telmex')profile.value='sep';
+    if(e.target.value==='Ivan' && profile.value==='sep')profile.value='telmex';
+  });
+}
+
+export async function initIngresos(){
+  injectIncomeStyles();
+  renderIncomeShell();
+  refreshLocalCatalogUI();
+  bindIncomeEvents();
+  resetManualForm();
+  refreshSelectedFiles();
+  try{
+    await openIncomeDb();
+    await renderIncomeHistory();
+  }catch(err){
+    console.error(err);
+    toast('No se pudo abrir la base local de Ingresos.','error');
+  }
+}
