@@ -995,7 +995,19 @@ async function detectPayslipProfile(file){
     const page=await pdf.getPage(1);
     const content=await page.getTextContent();
     const nativeText=normalizeOcrText(content.items.map(x=>x.str).join(' '));
-    return {profile:detectPayslipProfileFromText(nativeText,file?.name||''),text:nativeText};
+    const profile=detectPayslipProfileFromText(nativeText,file?.name||'');
+    if(profile!=='generic')return {profile,text:nativeText};
+  }catch{
+    // A scanned PDF may have no usable text layer. Try OCR before routing it
+    // to the generic reader, which deliberately leaves the amounts empty.
+  }
+  try{
+    const {canvas}=await extractPdfTextAndCanvas(file);
+    const worker=await getTelmexOcrWorker();
+    await worker.setParameters({tessedit_pageseg_mode:'3',tessedit_char_whitelist:''});
+    const result=await worker.recognize(canvas);
+    const text=normalizeOcrText(result?.data?.text||'');
+    return {profile:detectPayslipProfileFromText(text,file?.name||''),text};
   }catch{
     return {profile:'generic',text:''};
   }
