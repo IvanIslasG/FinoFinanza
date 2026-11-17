@@ -295,8 +295,8 @@ function updateWeekTotal(){
 }
 
 async function saveCurrentWeek(){
-  if(!currentWeek.some(r=>r.minutes>0||(r.activity||'').trim()||r.start2||r.end2)){
-    alert('No hay tiempo extra capturado.');
+  if(currentWeek.length!==7 || !document.getElementById('weekStart').value){
+    alert('Selecciona la semana que deseas guardar.');
     return;
   }
   const item={
