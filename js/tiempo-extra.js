@@ -62,6 +62,10 @@ function formatDateEs(s){
   const [y,m,d]=s.split('-');
   return `${d}/${m}/${y}`;
 }
+function entryDayName(date){
+  const d=new Date(`${date}T12:00:00`);
+  return Number.isNaN(d.getTime())?'—':dayNames[(d.getDay()+6)%7];
+}
 function minutesBetween(start,end){
   if(!start||!end)return 0;
   const [sh,sm]=start.split(':').map(Number);
@@ -979,7 +983,7 @@ function buildWeekMessageText(w){
   ];
   (w.entries||[]).forEach((r,i)=>{
     if((r.minutes||0)>0||(r.activity||'').trim()){
-      lines.push(`${dayNames[i]} ${formatDateEs(r.date)} | ${entryScheduleText(r)||'—'} | ${hhmm(r.minutes||totalEntryMinutes(r))} h | ${r.activity||''}`);
+      lines.push(`${entryDayName(r.date)} ${formatDateEs(r.date)} | ${entryScheduleText(r)||'—'} | ${hhmm(r.minutes||totalEntryMinutes(r))} h | ${r.activity||''}`);
     }
   });
   lines.push('',`TOTAL: ${hhmm(w.total||0)} h`);
@@ -993,7 +997,7 @@ function buildExcelTSV(w){
         .split(String.fromCharCode(9)).join(' ')
         .split(String.fromCharCode(10)).join(' ')
         .split(String.fromCharCode(13)).join(' ');
-      rows.push([dayNames[i],formatDateEs(r.date),r.start||'',r.end||'',hhmm(r.minutes||totalEntryMinutes(r)),activity+(r.start2||r.end2?` [2º horario: ${r.start2||'—'}-${r.end2||'—'}]`:'')]);
+      rows.push([entryDayName(r.date),formatDateEs(r.date),r.start||'',r.end||'',hhmm(r.minutes||totalEntryMinutes(r)),activity+(r.start2||r.end2?` [2º horario: ${r.start2||'—'}-${r.end2||'—'}]`:'')]);
     }
   });
   rows.push(['TOTAL','','','',hhmm(w.total||0),'']);
@@ -1034,7 +1038,7 @@ function openWeekView(id){
   (w.entries||[]).forEach((r,i)=>{
     if((r.minutes||0)>0||(r.activity||'').trim()){
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td><strong>${dayNames[i]}</strong></td><td>${formatDateEs(r.date)}</td><td>${r.start||'—'}${r.start2?`<br><small>2º: ${r.start2}</small>`:''}</td><td>${r.end||'—'}${r.end2?`<br><small>2º: ${r.end2}</small>`:''}</td><td><strong>${hhmm(r.minutes||totalEntryMinutes(r))}</strong></td><td>${r.activity||''}</td>`;
+      tr.innerHTML=`<td><strong>${entryDayName(r.date)}</strong></td><td>${formatDateEs(r.date)}</td><td>${r.start||'—'}${r.start2?`<br><small>2º: ${r.start2}</small>`:''}</td><td>${r.end||'—'}${r.end2?`<br><small>2º: ${r.end2}</small>`:''}</td><td><strong>${hhmm(r.minutes||totalEntryMinutes(r))}</strong></td><td>${r.activity||''}</td>`;
       body.appendChild(tr);
     }
   });
@@ -1063,7 +1067,7 @@ function openEditor(id){
     const row=document.createElement('div');
     row.className='editor-day';
     row.innerHTML=`
-      <div class="ed-label"><strong>${dayNames[i]}</strong><br><small>${formatDateEs(r.date)}</small></div>
+      <div class="ed-label"><strong data-edit-day>${entryDayName(r.date)}</strong><br><input type="date" data-ei="${i}" data-ef="date" value="${r.date||''}" aria-label="Fecha del día reportado ${i+1}" required style="width:100%;min-width:0"></div>
       <input type="time" data-ei="${i}" data-ef="start" value="${r.start||''}">
       <input type="time" data-ei="${i}" data-ef="end" value="${r.end||''}">
       <input type="text" data-ei="${i}" data-ef="activity" value="${(r.activity||'').replace(/"/g,'&quot;')}" placeholder="Actividad">
@@ -1076,6 +1080,12 @@ function openEditor(id){
         </div>
       </div>`;
     box.appendChild(row);
+  });
+
+  box.querySelectorAll('[data-ef="date"]').forEach(input=>{
+    input.addEventListener('change',()=>{
+      input.closest('.ed-label').querySelector('[data-edit-day]').textContent=entryDayName(input.value);
+    });
   });
 
   box.querySelectorAll('[data-edit-add-slot]').forEach(btn=>{
@@ -1118,10 +1128,20 @@ async function saveEdit(){
   document.querySelectorAll('#editorDays [data-ei]').forEach(el=>{
     entries[Number(el.dataset.ei)][el.dataset.ef]=el.value;
   });
+  if(!entries.length || entries.some(r=>{
+    const d=new Date(`${r.date}T12:00:00`);
+    return !/^\d{4}-\d{2}-\d{2}$/.test(r.date||'') || Number.isNaN(d.getTime()) || toInputDate(d)!==r.date;
+  })){
+    alert('Selecciona una fecha válida para cada día reportado.');
+    return;
+  }
+  const datesChanged=entries.some((r,i)=>r.date!==w.entries[i].date);
+  entries.sort((a,b)=>a.date.localeCompare(b.date));
   entries.forEach(r=>{ r.minutes=totalEntryMinutes(r); });
 
   await putItem({
     ...w,
+    ...(datesChanged?{start:entries[0].date,end:entries[entries.length-1].date}:{}),
     periodo:document.getElementById('editPeriod').value,
     report:document.getElementById('editReport').value,
     pay:document.getElementById('editPay').value,
